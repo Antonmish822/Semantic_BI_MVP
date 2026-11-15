@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Пульс лидов — Semantic BI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">P</div>
+        <div>
+          <p class="eyebrow">SEMANTIC BI · BITRIX24</p>
+          <h1>CRM Pulse</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="connection" class="connection pending"><i></i><span>Подключение…</span></span>
+        <span id="updated" class="updated">—</span>
+        <button id="refresh" class="refresh" type="button" aria-label="Обновить данные" title="Обновить данные">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5a7 7 0 0 0 11.8-2"/></svg>
+          <span>Обновить</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="page-nav" aria-label="Страницы дашборда">
+      <a href="/">Пульс сделок</a>
+      <a class="active" href="/leads">Пульс лидов</a>
+      <a href="/employees">Сотрудники</a>
+    </nav>
+
+    <div id="error" class="error-banner" hidden></div>
+    <section aria-labelledby="leads-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ВХОДЯЩИЙ ПОТОК</p>
+          <h2 id="leads-title">Пульс лидов</h2>
+        </div>
+        <p class="section-note">Даты и интервалы считаются по текущему времени</p>
+      </div>
+      <div class="metric-grid lead-metric-grid">
+        <article class="metric-card metric-primary">
+          <div class="metric-label">Поступило за 1 день</div>
+          <div id="created-1d" class="metric-value">—</div>
+          <div class="metric-foot">По дате создания лида</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Поступило за 7 дней</div>
+          <div id="created-7d" class="metric-value">—</div>
+          <div class="metric-foot">По дате создания лида</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Поступило за 30 дней</div>
+          <div id="created-30d" class="metric-value">—</div>
+          <div class="metric-foot">По дате создания лида</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Средняя скорость реакции</div>
+          <div id="average-response" class="metric-value metric-value-text">—</div>
+          <div id="response-sample" class="metric-foot">Время до первой активности · лиды за 30 дней</div>
+        </article>
+        <article class="metric-card metric-primary">
+          <div class="metric-label">Среднее время до сделки</div>
+          <div id="average-conversion" class="metric-value metric-value-text">—</div>
+          <div id="conversion-sample" class="metric-foot">Лид → сделка на стадии P</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="red-leads-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">КОНТРОЛЬ РЕАКЦИИ</p>
+          <h2 id="red-leads-title">Красные лиды</h2>
+          <p class="panel-subtitle">10 последних лидов, у которых первая активность наступила позже чем через 2 часа после создания или отсутствует.</p>
+        </div>
+      </div>
+      <div id="leads-loading" class="empty-state">Загружаю данные…</div>
+      <div class="table-wrap">
+        <table id="leads-table" hidden>
+          <thead><tr><th>Создан</th><th>Лид</th><th>Источник</th><th>Ответственный</th></tr></thead>
+          <tbody id="lead-rows"></tbody>
+        </table>
+      </div>
+      <div id="leads-empty" class="empty-state" hidden>Красных лидов нет.</div>
+    </section>
+
+    <section class="panel" aria-labelledby="conversion-trend-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">СКОРОСТЬ КОНВЕРСИИ</p>
+          <h2 id="conversion-trend-title">Пульс конвертации лида в сделку</h2>
+          <p class="panel-subtitle">Среднее время до связанной сделки P · скользящее окно 30 дней · последние 90 дней</p>
+        </div>
+        <label class="team-filter">
+          <span>Воронка</span>
+          <select id="lead-conversion-category" class="project-filter" aria-label="Фильтр графика по воронке">
+            <option value="all">Все воронки</option>
+          </select>
+        </label>
+      </div>
+      <div id="conversion-trend-empty" class="empty-state" hidden>Нет данных о конверсиях в выбранной воронке.</div>
+      <div id="conversion-trend-chart" class="response-trend-chart" role="img" aria-label="График среднего времени конвертации лидов в сделки по дням"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="response-trend-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">СКОРОСТЬ ОБРАБОТКИ</p>
+          <h2 id="response-trend-title">Пульс активностей по лидам</h2>
+          <p class="panel-subtitle">Среднее время до первой активности · скользящее окно 30 дней · последние 90 дней</p>
+        </div>
+      </div>
+      <div id="response-trend-empty" class="empty-state" hidden>Недостаточно данных для графика.</div>
+      <div id="response-trend-chart" class="response-trend-chart" role="img" aria-label="График среднего времени до первой активности по дням"></div>
+    </section>
+
+    <footer>
+      <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>
+      <span>Конверсия определяется по originLead связанной сделки со stageSemantic = P.</span>
+    </footer>
+  </main>
+  <script src="/leads.js" defer></script>
+</body>
+</html>

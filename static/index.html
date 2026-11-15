@@ -18,6 +18,12 @@
         </div>
       </div>
       <div class="header-actions">
+        <label class="team-filter global-filter">
+          <span>Категория</span>
+          <select id="project-filter" class="project-filter" aria-label="Фильтр дашборда по категории">
+            <option value="all">Все категории</option>
+          </select>
+        </label>
         <span id="connection" class="connection pending"><i></i><span>Подключение…</span></span>
         <span id="updated" class="updated">—</span>
         <button id="refresh" class="refresh" type="button" aria-label="Обновить данные" title="Обновить данные">
@@ -26,6 +32,12 @@
         </button>
       </div>
     </header>
+
+    <nav class="page-nav" aria-label="Страницы дашборда">
+      <a class="active" href="/">Пульс сделок</a>
+      <a href="/leads">Пульс лидов</a>
+      <a href="/employees">Сотрудники</a>
+    </nav>
 
     <div id="error" class="error-banner" hidden></div>
 
@@ -66,6 +78,25 @@
       </div>
     </section>
 
+    <section class="panel" aria-labelledby="activity-distribution-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">ДАВНОСТЬ АКТИВНОСТИ</p>
+          <h2 id="activity-distribution-title">Распределение активных сделок по последней активности</h2>
+          <p class="panel-subtitle">Интервалы по 5 дней · сделки стадии P</p>
+        </div>
+        <label class="team-filter">
+          <span>Категория графика</span>
+          <select id="activity-distribution-category" class="project-filter" aria-label="Фильтр графика по категории">
+            <option value="all">Все категории</option>
+          </select>
+        </label>
+      </div>
+      <div id="activity-distribution-loading" class="empty-state">Загружаю распределение…</div>
+      <div id="activity-distribution-chart" class="activity-distribution-chart" role="img" aria-label="Распределение активных сделок по давности последней активности" hidden></div>
+      <div id="activity-distribution-empty" class="empty-state" hidden>Нет сделок для распределения.</div>
+    </section>
+
     <section class="panel red-panel" aria-labelledby="red-title">
       <div class="panel-heading">
         <div>
@@ -74,12 +105,6 @@
           <p class="panel-subtitle">Владелец-сделка · нет записи активности за последние 7 дней</p>
         </div>
         <div class="red-controls">
-          <label class="red-project-filter">
-            <span>Категория</span>
-            <select id="red-project-filter" class="project-filter" aria-label="Фильтр красных сделок по категории">
-              <option value="all">Все категории</option>
-            </select>
-          </label>
           <button id="toggle-red" class="secondary-button" type="button" aria-expanded="false" aria-controls="red-content">
             <span>Показать список</span><span id="red-count" class="count-badge">—</span>
           </button>
@@ -117,28 +142,6 @@
           </table>
         </div>
         <div id="activities-empty" class="empty-state" hidden>Активностей по сделкам пока нет.</div>
-      </div>
-    </section>
-
-    <section class="panel team-panel" aria-labelledby="team-title">
-      <div class="panel-heading team-heading">
-        <div>
-          <p class="eyebrow">НАГРУЗКА И РЕАКЦИЯ</p>
-          <h2 id="team-title">20 сотрудников с наибольшим портфелем</h2>
-          <p class="panel-subtitle">Активности считаются по ответственному CRM-дела; сделки — по назначенному сотруднику.</p>
-        </div>
-        <label class="team-filter">
-          <span>Портфель проекта</span>
-          <select id="project-filter" class="project-filter" aria-label="Фильтр сотрудников по проекту">
-            <option value="all">Все проекты</option>
-          </select>
-        </label>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Сотрудник</th><th class="number">Сделки P</th><th class="number">Активности · 24 ч</th><th class="number">7 дн.</th><th class="number">30 дн.</th><th class="number">Сделки без активности · 7 дн.</th></tr></thead>
-          <tbody id="employee-rows"><tr><td colspan="6" class="empty-state">Загружаю данные…</td></tr></tbody>
-        </table>
       </div>
     </section>
 

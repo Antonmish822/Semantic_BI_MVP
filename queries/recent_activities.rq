@@ -4,6 +4,7 @@ PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 SELECT DISTINCT ?activity ?subject ?activity_at ?deal ?deal_title
                 ?deal_semantic ?stage_name ?employee ?employee_name
 WHERE {
+  VALUES ?selected_project { {{selected_project}} }
   GRAPH ?activity_graph {
     ?activity b24:owner ?deal ;
               b24:ownerTypeId "2" ;
@@ -13,6 +14,14 @@ WHERE {
   }
   FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
          && CONTAINS(STR(?activity_graph), ":activity:"))
+  FILTER(?selected_project = "all" || EXISTS {
+    GRAPH ?deal_category_graph {
+      ?deal b24:categoryCode ?activity_category_code .
+    }
+    FILTER(STRSTARTS(STR(?deal_category_graph), {{graph_prefix}})
+           && CONTAINS(STR(?deal_category_graph), ":deal:")
+           && STR(?activity_category_code) = ?selected_project)
+  })
   BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
 
   OPTIONAL {

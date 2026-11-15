@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Сотрудники — Semantic BI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">P</div>
+        <div>
+          <p class="eyebrow">SEMANTIC BI · BITRIX24</p>
+          <h1>CRM Pulse</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="team-filter global-filter">
+          <span>Категория портфеля</span>
+          <select id="project-filter" class="project-filter" aria-label="Фильтр портфеля по категории">
+            <option value="all">Все категории</option>
+          </select>
+        </label>
+        <span id="connection" class="connection pending"><i></i><span>Подключение…</span></span>
+        <span id="updated" class="updated">—</span>
+        <button id="refresh" class="refresh" type="button" aria-label="Обновить данные" title="Обновить данные">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.8-2L20 12M4 12l2.6 5a7 7 0 0 0 11.8-2"/></svg>
+          <span>Обновить</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="page-nav" aria-label="Страницы дашборда">
+      <a href="/">Пульс сделок</a>
+      <a href="/leads">Пульс лидов</a>
+      <a class="active" href="/employees">Сотрудники</a>
+    </nav>
+
+    <div id="error" class="error-banner" hidden></div>
+
+    <section class="panel" aria-labelledby="employee-pulse-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">ЭФФЕКТИВНОСТЬ КОМАНДЫ</p>
+          <h2 id="employee-pulse-title">Пульс сотрудников</h2>
+          <p class="panel-subtitle">Средняя реакция на лид и время конвертации · скользящее окно 30 дней · последние 90 дней</p>
+        </div>
+        <label class="team-filter">
+          <span>Сотрудник</span>
+          <select id="lead-employee-filter" class="project-filter" aria-label="Фильтр графика по сотруднику">
+            <option value="all">Все сотрудники</option>
+          </select>
+        </label>
+      </div>
+      <div class="employee-pulse-legend">
+        <span><i class="legend-response"></i>Средняя скорость реакции</span>
+        <span><i class="legend-conversion"></i>Среднее время конвертации</span>
+      </div>
+      <div id="employee-pulse-empty" class="empty-state" hidden>Недостаточно данных по выбранному сотруднику.</div>
+      <div id="employee-pulse-chart" class="response-trend-chart" role="img" aria-label="График скорости реакции и конвертации по дням"></div>
+    </section>
+
+    <section class="panel team-panel" aria-labelledby="team-title">
+      <div class="panel-heading team-heading">
+        <div>
+          <p class="eyebrow">НАГРУЗКА И РЕАКЦИЯ</p>
+          <h2 id="team-title">20 сотрудников с наибольшим портфелем</h2>
+          <p class="panel-subtitle">Активности считаются по ответственному CRM-дела; сделки — по назначенному сотруднику.</p>
+        </div>
+      </div>
+      <div id="portfolio-loading" class="empty-state">Загружаю данные…</div>
+      <div class="table-wrap">
+        <table id="employee-table" hidden>
+          <thead><tr><th>Сотрудник</th><th class="number">Сделки P</th><th class="number">Активности · 24 ч</th><th class="number">7 дн.</th><th class="number">30 дн.</th><th class="number">Сделки без активности · 7 дн.</th></tr></thead>
+          <tbody id="employee-rows"></tbody>
+        </table>
+      </div>
+      <div id="portfolio-empty" class="empty-state" hidden>Нет сотрудников с активными сделками P.</div>
+    </section>
+
+    <footer>
+      <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>
+      <span>Пульс рассчитывается по ответственному лида (assignedTo).</span>
+    </footer>
+  </main>
+  <script src="/employees.js" defer></script>
+</body>
+</html>

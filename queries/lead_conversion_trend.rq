@@ -1,0 +1,23 @@
+PREFIX b24: <https://example.org/bitrix24#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+SELECT ?lead ?created_at ?category_code
+       (MIN(xsd:dateTime(STR(?deal_created_raw))) AS ?converted_at)
+WHERE {
+  GRAPH ?lead_graph {
+    ?lead b24:createdAt ?lead_created_raw .
+  }
+  FILTER(STRSTARTS(STR(?lead_graph), {{graph_prefix}})
+         && CONTAINS(STR(?lead_graph), ":lead:"))
+  BIND(xsd:dateTime(STR(?lead_created_raw)) AS ?created_at)
+
+  GRAPH ?deal_graph {
+    ?deal b24:originLead ?lead ;
+          b24:stageSemantic "P" ;
+          b24:createdAt ?deal_created_raw ;
+          b24:categoryCode ?category_code .
+  }
+  FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
+         && CONTAINS(STR(?deal_graph), ":deal:"))
+}
+GROUP BY ?lead ?created_at ?category_code

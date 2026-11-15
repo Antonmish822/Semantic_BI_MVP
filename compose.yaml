@@ -1,0 +1,25 @@
+services:
+  crm-pulse-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: "8088"
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+    ports:
+      - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
+    networks:
+      - rdf_store
+
+networks:
+  rdf_store:
+    external: true
+    name: ${RDF_DOCKER_NETWORK:-graphdb_default}

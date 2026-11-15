@@ -8,12 +8,16 @@ SELECT
   (SUM(IF(?created_at >= NOW() - "P30D"^^xsd:dayTimeDuration && ?created_at <= NOW(), 1, 0)) AS ?created_30d)
   (SUM(IF(?has_activity_7d, 0, 1)) AS ?inactive_7d)
 WHERE {
+  VALUES ?selected_project { {{selected_project}} }
   GRAPH ?deal_graph {
     ?deal b24:stageSemantic "P" ;
-          b24:createdAt ?created_raw .
+          b24:createdAt ?created_raw ;
+          b24:categoryCode ?category_code .
   }
   FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
          && CONTAINS(STR(?deal_graph), ":deal:"))
+  FILTER(?selected_project = "all"
+         || STR(?category_code) = ?selected_project)
   BIND(xsd:dateTime(STR(?created_raw)) AS ?created_at)
   BIND(EXISTS {
     GRAPH ?activity_graph {

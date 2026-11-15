@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -19,7 +19,10 @@ STATIC = ROOT / "static"
 CACHE_SECONDS = 30
 CACHE: dict[str, object] = {"pulse": {}, "categories_at": 0.0,
                            "categories": None, "red_deals": {},
-                           "recent_activities_at": 0.0, "recent_activities": None}
+                           "recent_activities_at": 0.0, "recent_activities": {},
+                           "lead_pulse_at": 0.0, "lead_pulse": None,
+                           "lead_conversion_trend": {}, "lead_employee_pulse": {},
+                           "deal_activity_distribution": {}}
 CACHE_LOCK = threading.Lock()
 
 
@@ -77,7 +80,9 @@ class RDFStoreClient:
         return result.get("results", {}).get("bindings", [])
 
     def pulse(self, project: str = "all") -> dict[str, object]:
-        summary_rows = self.select(load_query("pulse_summary.rq", self.graph_prefix))
+        summary_query = load_query("pulse_summary.rq", self.graph_prefix)
+        summary_query = summary_query.replace("{{selected_project}}", sparql_literal(project))
+        summary_rows = self.select(summary_query)
         employee_query = load_query("employee_metrics.rq", self.graph_prefix)
         employee_query = employee_query.replace("{{selected_project}}", sparql_literal(project))
         employee_rows = self.select(employee_query)
@@ -117,6 +122,46 @@ class RDFStoreClient:
             ),
         } for row in rows if value_text(row, "category_code")]
 
+    def deal_activity_distribution(self, project: str = "all") -> dict[str, object]:
+        query = load_query("deal_activity_distribution.rq", self.graph_prefix)
+        query = query.replace("{{selected_project}}", sparql_literal(project))
+        rows = self.select(query)
+        now = datetime.now(timezone.utc)
+        activity_by_deal: dict[str, datetime | None] = {}
+        for row in rows:
+            deal = value_text(row, "deal")
+            if not deal:
+                continue
+            last_activity = parse_rdf_datetime(value_text(row, "last_activity_raw"))
+            if deal not in activity_by_deal or (
+                last_activity and (activity_by_deal[deal] is None or last_activity > activity_by_deal[deal])
+            ):
+                activity_by_deal[deal] = last_activity
+
+        buckets = [
+            {"key": start, "label": f"{start}–{start + 5} дней", "deal_count": 0}
+            for start in range(0, 30, 5)
+        ]
+        buckets.extend([
+            {"key": 30, "label": "30+ дней", "deal_count": 0},
+            {"key": None, "label": "Нет даты", "deal_count": 0},
+        ])
+        counts = {bucket["key"]: bucket for bucket in buckets}
+        for last_activity in activity_by_deal.values():
+            if last_activity is None:
+                counts[None]["deal_count"] += 1
+                continue
+            age_days = max(0, (now - last_activity).total_seconds() / 86400)
+            key = 30 if age_days >= 30 else int(age_days // 5) * 5
+            counts[key]["deal_count"] += 1
+        return {
+            "available": True,
+            "backend": self.backend,
+            "as_of": now.isoformat(),
+            "total_deals": len(activity_by_deal),
+            "buckets": buckets,
+        }
+
     def red_deals(self, project: str = "all") -> list[dict[str, str | None]]:
         query = load_query("red_deals.rq", self.graph_prefix)
         query = query.replace("{{selected_project}}", sparql_literal(project))
@@ -129,8 +174,10 @@ class RDFStoreClient:
             "last_activity_time": value_text(row, "last_activity_time"),
         } for row in rows]
 
-    def recent_activities(self) -> list[dict[str, str | None]]:
-        rows = self.select(load_query("recent_activities.rq", self.graph_prefix))
+    def recent_activities(self, project: str = "all") -> list[dict[str, str | None]]:
+        query = load_query("recent_activities.rq", self.graph_prefix)
+        query = query.replace("{{selected_project}}", sparql_literal(project))
+        rows = self.select(query)
         semantic_labels = {"P": "InProgressDeal", "S": "SuccessfulDeal", "F": "ClosedDeal"}
         activities = []
         for row in rows:
@@ -151,6 +198,194 @@ class RDFStoreClient:
             })
         return activities
 
+    def lead_pulse(self) -> dict[str, object]:
+        rows = self.select(load_query("lead_lifecycle.rq", self.graph_prefix))
+        now = datetime.now(timezone.utc)
+        red_leads = []
+        reactions = []
+        conversion_lifetimes = []
+        lead_observations = []
+        counts = {"created_1d": 0, "created_7d": 0, "created_30d": 0}
+        windows = {
+            "created_1d": 1,
+            "created_7d": 7,
+            "created_30d": 30,
+        }
+        for row in rows:
+            created_raw = value_text(row, "created_at")
+            created_at = parse_rdf_datetime(created_raw)
+            if not created_at or created_at > now:
+                continue
+            first_activity = parse_rdf_datetime(value_text(row, "first_activity_at"))
+            converted_at = parse_rdf_datetime(value_text(row, "converted_at"))
+            age_days = (now - created_at).total_seconds() / 86400
+            for key, days in windows.items():
+                if age_days <= days:
+                    counts[key] += 1
+            if first_activity and created_at <= first_activity <= now and age_days <= 30:
+                reactions.append((first_activity - created_at).total_seconds() / 60)
+            if first_activity and created_at <= first_activity <= now:
+                lead_observations.append((created_at, first_activity))
+            if converted_at and created_at <= converted_at <= now:
+                conversion_lifetimes.append((converted_at - created_at).total_seconds() / 86400)
+            if (created_at <= now - timedelta(hours=2)
+                    and (value_text(row, "has_converted_deal") or "").lower() != "true"
+                    and (value_text(row, "status_code") or "").upper() != "CONVERTED"
+                    and (first_activity is None or first_activity > created_at + timedelta(hours=2))):
+                red_leads.append({
+                    "uri": value_text(row, "lead"),
+                    "title": value_text(row, "title") or "Без названия",
+                    "created_at": created_at.isoformat(),
+                    "source_code": value_text(row, "source_code"),
+                    "source_name": value_text(row, "source_name"),
+                    "manager": value_text(row, "manager_name") or "Не назначен",
+                })
+        red_leads.sort(key=lambda lead: lead["created_at"], reverse=True)
+        response_trend = []
+        trend_start = now - timedelta(days=89)
+        for day in range(90):
+            point_at = trend_start + timedelta(days=day)
+            cohort_start = point_at - timedelta(days=30)
+            durations = [
+                (first_activity - created_at).total_seconds() / 60
+                for created_at, first_activity in lead_observations
+                if cohort_start <= created_at <= point_at and first_activity <= point_at
+            ]
+            response_trend.append({
+                "date": point_at.date().isoformat(),
+                "average_response_minutes": average(durations),
+                "sample_size": len(durations),
+            })
+        return {
+            "available": True,
+            "backend": self.backend,
+            "as_of": now.isoformat(),
+            "summary": {
+                **counts,
+                "average_response_minutes": average(reactions),
+                "response_sample_size": len(reactions),
+                "average_conversion_days": average(conversion_lifetimes),
+                "conversion_sample_size": len(conversion_lifetimes),
+            },
+            "response_trend": response_trend,
+            "red_leads": red_leads[:10],
+        }
+
+    def lead_conversion_trend(self, category: str = "all") -> dict[str, object]:
+        rows = self.select(load_query("lead_conversion_trend.rq", self.graph_prefix))
+        now = datetime.now(timezone.utc)
+        conversions = []
+        for row in rows:
+            if category != "all" and value_text(row, "category_code") != category:
+                continue
+            created_at = parse_rdf_datetime(value_text(row, "created_at"))
+            converted_at = parse_rdf_datetime(value_text(row, "converted_at"))
+            if created_at and converted_at and created_at <= converted_at <= now:
+                conversions.append((created_at, converted_at))
+
+        trend = []
+        trend_start = now - timedelta(days=89)
+        for day in range(90):
+            point_at = trend_start + timedelta(days=day)
+            cohort_start = point_at - timedelta(days=30)
+            durations = [
+                (converted_at - created_at).total_seconds() / 60
+                for created_at, converted_at in conversions
+                if cohort_start <= created_at <= point_at and converted_at <= point_at
+            ]
+            trend.append({
+                "date": point_at.date().isoformat(),
+                "average_conversion_minutes": average(durations),
+                "sample_size": len(durations),
+            })
+        return {
+            "available": True,
+            "backend": self.backend,
+            "as_of": now.isoformat(),
+            "conversion_trend": trend,
+        }
+
+    def lead_employee_pulse(self, employee: str = "all") -> dict[str, object]:
+        rows = self.select(load_query("lead_employee_pulse.rq", self.graph_prefix))
+        now = datetime.now(timezone.utc)
+        raw_observations = []
+        employees: dict[str, dict[str, object]] = {}
+        for row in rows:
+            employee_uri = value_text(row, "assigned_to")
+            created_at = parse_rdf_datetime(value_text(row, "created_at"))
+            if not employee_uri or not created_at or created_at > now:
+                continue
+            first_name = (value_text(row, "first_name") or "").strip()
+            last_name = (value_text(row, "last_name") or "").strip()
+            employee_name = " ".join(part for part in (last_name, first_name) if part)
+            if not employee_name:
+                employee_name = employee_label(employee_uri)
+            last_activity = parse_rdf_datetime(value_text(row, "last_activity_at"))
+            employees[employee_uri] = {
+                "name": employee_name,
+                "first_name": first_name,
+                "last_name": last_name,
+                "last_activity_at": last_activity,
+            }
+            first_activity = parse_rdf_datetime(value_text(row, "first_activity_at"))
+            converted_at = parse_rdf_datetime(value_text(row, "converted_at"))
+            raw_observations.append((employee_uri, created_at, first_activity, converted_at))
+
+        active_employee_ids = {
+            uri for uri, info in employees.items()
+            if isinstance(info["last_activity_at"], datetime)
+            and now - timedelta(days=30) <= info["last_activity_at"] <= now
+        }
+        observations = [
+            (created_at, first_activity, converted_at)
+            for uri, created_at, first_activity, converted_at in raw_observations
+            if uri in active_employee_ids and (employee == "all" or uri == employee)
+        ]
+
+        employee_options = [
+            {"id": uri, "name": str(info["name"])}
+            for uri, info in sorted(
+                employees.items(),
+                key=lambda item: (
+                    str(item[1]["last_name"]).casefold(),
+                    str(item[1]["first_name"]).casefold(),
+                    item[0],
+                ),
+            )
+            if uri in active_employee_ids
+        ]
+        trend = []
+        trend_start = now - timedelta(days=89)
+        for day in range(90):
+            point_at = trend_start + timedelta(days=day)
+            cohort_start = point_at - timedelta(days=30)
+            response_times = [
+                (first_activity - created_at).total_seconds() / 60
+                for created_at, first_activity, _ in observations
+                if first_activity and cohort_start <= created_at <= point_at
+                and created_at <= first_activity <= point_at
+            ]
+            conversion_times = [
+                (converted_at - created_at).total_seconds() / 60
+                for created_at, _, converted_at in observations
+                if converted_at and cohort_start <= created_at <= point_at
+                and created_at <= converted_at <= point_at
+            ]
+            trend.append({
+                "date": point_at.date().isoformat(),
+                "average_response_minutes": average(response_times),
+                "response_sample_size": len(response_times),
+                "average_conversion_minutes": average(conversion_times),
+                "conversion_sample_size": len(conversion_times),
+            })
+        return {
+            "available": True,
+            "backend": self.backend,
+            "as_of": now.isoformat(),
+            "employees": employee_options,
+            "employee_trend": trend,
+        }
+
 
 def value_text(row: dict[str, dict[str, str]], key: str) -> str | None:
     item = row.get(key)
@@ -162,6 +397,20 @@ def value_int(row: dict[str, dict[str, str]], key: str) -> int:
         return int(value_text(row, key) or 0)
     except ValueError:
         return 0
+
+
+def parse_rdf_datetime(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    except ValueError:
+        return None
+
+
+def average(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
 
 
 def employee_label(uri: str | None) -> str:
@@ -228,6 +477,19 @@ def get_categories() -> list[dict[str, str]]:
         return rows
 
 
+def get_deal_activity_distribution(project: str = "all") -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cache = CACHE["deal_activity_distribution"]
+        assert isinstance(cache, dict)
+        cached = cache.get(project)
+        if cached is not None and now - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        payload = create_store_client().deal_activity_distribution(project)
+        cache[project] = (now, payload)
+        return payload
+
+
 def get_red_deals(project: str = "all") -> list[dict[str, str | None]]:
     now = time.monotonic()
     with CACHE_LOCK:
@@ -242,16 +504,44 @@ def get_red_deals(project: str = "all") -> list[dict[str, str | None]]:
         return rows
 
 
-def get_recent_activities() -> list[dict[str, str | None]]:
+def get_recent_activities(project: str = "all") -> list[dict[str, str | None]]:
     now = time.monotonic()
     with CACHE_LOCK:
         cached = CACHE.get("recent_activities")
-        if cached is not None and now - float(CACHE["recent_activities_at"]) < CACHE_SECONDS:
-            return cached  # type: ignore[return-value]
-        rows = create_store_client().recent_activities()
-        CACHE["recent_activities_at"] = now
-        CACHE["recent_activities"] = rows
+        cache = cached if isinstance(cached, dict) else {}
+        cached_project = cache.get(project)
+        if cached_project is not None and now - cached_project[0] < CACHE_SECONDS:
+            return cached_project[1]
+        rows = create_store_client().recent_activities(project)
+        cache[project] = (now, rows)
+        CACHE["recent_activities"] = cache
         return rows
+
+
+def get_lead_conversion_trend(category: str = "all") -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cache = CACHE["lead_conversion_trend"]
+        assert isinstance(cache, dict)
+        cached = cache.get(category)
+        if cached is not None and now - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        payload = create_store_client().lead_conversion_trend(category)
+        cache[category] = (now, payload)
+        return payload
+
+
+def get_lead_employee_pulse(employee: str = "all") -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cache = CACHE["lead_employee_pulse"]
+        assert isinstance(cache, dict)
+        cached = cache.get(employee)
+        if cached is not None and now - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        payload = create_store_client().lead_employee_pulse(employee)
+        cache[employee] = (now, payload)
+        return payload
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -261,8 +551,16 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path in {"/", "/index.html"}:
             self._send_file(STATIC / "index.html", "text/html; charset=utf-8")
+        elif path in {"/leads", "/leads.html"}:
+            self._send_file(STATIC / "leads.html", "text/html; charset=utf-8")
+        elif path in {"/employees", "/employees.html"}:
+            self._send_file(STATIC / "employees.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
+        elif path == "/leads.js":
+            self._send_file(STATIC / "leads.js", "text/javascript; charset=utf-8")
+        elif path == "/employees.js":
+            self._send_file(STATIC / "employees.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
         elif path == "/api/pulse":
@@ -280,6 +578,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(502, {"available": False,
                                       "error": "GraphDB недоступен или запрос отклонён"})
                 self.log_error("CRM pulse query failed (%s)", type(exc).__name__)
+        elif path == "/api/deal-activity-distribution":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                project = params.get("project", ["all"])[0]
+                valid_projects = {item["id"] for item in get_categories()}
+                if project != "all" and project not in valid_projects:
+                    self._send_json(400, {"error": "Неизвестная категория проекта"})
+                    return
+                self._send_json(200, get_deal_activity_distribution(project))
+            except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                self._send_json(502, {"error": "Не удалось получить распределение сделок по последней активности"})
+                self.log_error("CRM deal activity distribution query failed (%s)", type(exc).__name__)
         elif path == "/api/red-deals":
             try:
                 params = parse_qs(urlsplit(self.path).query)
@@ -294,10 +604,58 @@ class Handler(BaseHTTPRequestHandler):
                 self.log_error("CRM red deals query failed (%s)", type(exc).__name__)
         elif path == "/api/recent-activities":
             try:
-                self._send_json(200, {"activities": get_recent_activities()})
+                params = parse_qs(urlsplit(self.path).query)
+                project = params.get("project", ["all"])[0]
+                valid_projects = {item["id"] for item in get_categories()}
+                if project != "all" and project not in valid_projects:
+                    self._send_json(400, {"error": "Неизвестная категория проекта"})
+                    return
+                self._send_json(200, {"activities": get_recent_activities(project)})
             except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
                 self._send_json(502, {"error": "Не удалось получить последние активности"})
                 self.log_error("CRM recent activities query failed (%s)", type(exc).__name__)
+        elif path == "/api/lead-pulse":
+            try:
+                now = time.monotonic()
+                with CACHE_LOCK:
+                    cached = CACHE.get("lead_pulse")
+                    if cached is not None and now - float(CACHE["lead_pulse_at"]) < CACHE_SECONDS:
+                        payload = cached
+                    else:
+                        payload = create_store_client().lead_pulse()
+                        CACHE["lead_pulse_at"] = now
+                        CACHE["lead_pulse"] = payload
+                self._send_json(200, payload)
+            except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                self._send_json(502, {"available": False,
+                                      "error": "Не удалось получить пульс лидов"})
+                self.log_error("CRM lead pulse query failed (%s)", type(exc).__name__)
+        elif path == "/api/lead-conversion-trend":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                category = params.get("category", ["all"])[0]
+                categories = get_categories()
+                valid_categories = {item["id"] for item in categories}
+                if category != "all" and category not in valid_categories:
+                    self._send_json(400, {"error": "Неизвестная категория воронки"})
+                    return
+                payload = get_lead_conversion_trend(category)
+                payload["categories"] = categories
+                self._send_json(200, payload)
+            except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                self._send_json(502, {"available": False,
+                                      "error": "Не удалось получить пульс конверсии лидов"})
+                self.log_error("CRM lead conversion trend query failed (%s)", type(exc).__name__)
+        elif path == "/api/lead-employee-pulse":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                employee = params.get("employee", ["all"])[0]
+                payload = get_lead_employee_pulse(employee)
+                self._send_json(200, payload)
+            except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+                self._send_json(502, {"available": False,
+                                      "error": "Не удалось получить пульс сотрудников"})
+                self.log_error("CRM lead employee pulse query failed (%s)", type(exc).__name__)
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 

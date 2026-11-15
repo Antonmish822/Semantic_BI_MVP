@@ -10,10 +10,10 @@ WHERE {
            (SUM(IF(?has_activity_7d, 0, 1)) AS ?inactive_deals_7d)
     WHERE {
       VALUES ?selected_project { {{selected_project}} }
-      ?deal b24:stageSemantic "P" .
       GRAPH ?deal_graph {
         ?deal b24:assignedTo ?employee ;
-              b24:categoryCode ?category_code .
+              b24:categoryCode ?category_code ;
+              b24:stageSemantic "P" .
       }
       FILTER(?selected_project = "all"
              || STR(?category_code) = ?selected_project)
