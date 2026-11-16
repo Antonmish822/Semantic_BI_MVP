@@ -4,7 +4,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
+COPY pyproject.toml ./pyproject.toml
+RUN pip install --no-cache-dir "rdflib>=7.0,<8"
 COPY server.py ./server.py
+COPY ontology_admin.py ./ontology_admin.py
+COPY ontologies ./ontologies
 COPY queries ./queries
 COPY static ./static
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only CRM pulse dashboard for Bitrix24 RDF data."""
+"""CRM pulse dashboard and file-backed ontology administration."""
 from __future__ import annotations
 
 import base64
 import json
+import hmac
 import os
 import threading
 import time
@@ -13,6 +14,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlsplit
 from urllib.request import Request, urlopen
+
+from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies,
+                            ontology_uri, parse_ttl, publish, read_ontology, save_text)
+from rdflib import Graph
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -55,9 +60,12 @@ def load_query(name: str, graph_prefix: str) -> str:
 
 class RDFStoreClient:
     def __init__(self, backend: str, query_url: str, username: str,
-                 password: str, graph_prefix: str, timeout: float) -> None:
+                 password: str, graph_prefix: str, timeout: float,
+                 base_url: str = "", repository: str = "") -> None:
         self.backend = backend
         self.query_url = query_url
+        self.base_url = base_url
+        self.repository = repository
         self.username = username
         self.password = password
         self.graph_prefix = graph_prefix
@@ -461,6 +469,8 @@ def create_store_client(environ: dict[str, str] | None = None) -> RDFStoreClient
             "urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:",
         ),
         timeout=timeout,
+        base_url=base_url if backend == "graphdb" else "",
+        repository=repository if backend == "graphdb" else "",
     )
 
 
@@ -567,6 +577,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "leads.html", "text/html; charset=utf-8")
         elif path in {"/employees", "/employees.html"}:
             self._send_file(STATIC / "employees.html", "text/html; charset=utf-8")
+        elif path in {"/ontologies", "/ontologies.html"}:
+            self._send_file(STATIC / "ontologies.html", "text/html; charset=utf-8")
+        elif path == "/ontologies.js":
+            self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
+        elif path == "/api/ontologies":
+            self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
+                                  "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
+        elif path.startswith("/api/ontologies/") and path.count("/") == 3 and path != "/api/ontologies/validate":
+            slug = path.rsplit("/", 1)[-1]
+            try:
+                text, sha = read_ontology(ROOT / "ontologies", slug)
+                payload = {"slug": slug, "filename": slug + ".ttl", "uri": ontology_uri(slug),
+                           "text": text, "sha256": sha, "publication_status": "unknown"}
+                try:
+                    store = create_store_client()
+                    if store.backend == "graphdb":
+                        from ontology_admin import graph_store_url
+                        url = graph_store_url(store.base_url, store.repository, ontology_uri(slug))
+                        remote_data = graph_request(url, "GET", store.username, store.password, store.timeout)
+                        remote = Graph().parse(data=remote_data, format="turtle")
+                        payload["publication_status"] = "published" if isomorphic(parse_ttl(text, slug), remote) else "unpublished"
+                    else:
+                        payload["publication_status"] = "unsupported"
+                except HTTPError as exc:
+                    payload["publication_status"] = "missing" if exc.code == 404 else "unavailable"
+                except Exception:
+                    payload["publication_status"] = "unavailable"
+                self._send_json(200, payload)
+            except OntologyError as exc:
+                self._send_json(exc.status, {"error": str(exc), **exc.details})
         elif path == "/app.js":
             self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
         elif path == "/leads.js":
@@ -678,13 +718,69 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+        self._ontology_write("POST")
 
     def do_PUT(self) -> None:  # noqa: N802
-        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+        self._ontology_write("PUT")
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+
+    def _ontology_write(self, method: str) -> None:
+        path = urlsplit(self.path).path
+        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        supplied = self.headers.get("Authorization", "")
+        if not token:
+            self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
+            return
+        if not supplied.startswith("Bearer ") or not hmac.compare_digest(supplied[7:], token):
+            self._send_json(401, {"error": "Требуется токен администратора"})
+            return
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if not origin or urlsplit(origin).netloc != host:
+            self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_TTL_BYTES + 4096:
+                self._send_json(413, {"error": "Недопустимый размер запроса"})
+                return
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise OntologyError(400, "Ожидается JSON-объект")
+            if path == "/api/ontologies/validate" and method == "POST":
+                slug = payload.get("slug")
+                parse_ttl(payload.get("text"), slug)
+                self._send_json(200, {"valid": True, "uri": ontology_uri(slug)})
+                return
+            if path == "/api/ontologies" and method == "POST":
+                slug = payload.get("slug")
+                sha = save_text(ROOT / "ontologies", slug, payload.get("text"), None, create=True)
+                self._send_json(201, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
+                                      "published": False})
+                return
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[:2] == ["api", "ontologies"] and method == "PUT":
+                slug = parts[2]
+                sha = save_text(ROOT / "ontologies", slug, payload.get("text"),
+                                payload.get("expected_sha256"))
+                self._send_json(200, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
+                                      "published": False})
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "publish" and method == "POST":
+                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client()))
+                return
+            self._send_json(404, {"error": "Неизвестная операция управления онтологиями"})
+        except OntologyError as exc:
+            self._send_json(exc.status, {"error": str(exc), **exc.details})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
+        except PermissionError:
+            self._send_json(503, {"error": "Каталог ontologies недоступен для записи"})
+        except Exception as exc:
+            self.log_error("Ontology operation failed (%s)", type(exc).__name__)
+            self._send_json(502, {"error": "Операция с онтологией не выполнена"})
 
     def _send_file(self, path: Path, content_type: str) -> None:
         self._send(200, path.read_bytes(), content_type)
@@ -712,7 +808,7 @@ def main() -> None:
     port = int(os.environ.get("DASHBOARD_PORT", "8082"))
     server = ThreadingHTTPServer((host, port), Handler)
     store = create_store_client()
-    print(f"CRM pulse: http://{host}:{port} (read-only; RDF backend: {store.backend})")
+    print(f"CRM pulse: http://{host}:{port} (RDF backend: {store.backend})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

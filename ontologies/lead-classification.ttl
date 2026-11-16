@@ -1,0 +1,64 @@
+@prefix b24:  <https://example.org/bitrix24#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:bitrix24:ontology:lead-classification>
+    a owl:Ontology ;
+    rdfs:label "Bitrix24 lead classification"@en ;
+    rdfs:label "Классификация лидов Bitrix24"@ru ;
+    rdfs:comment "Выводит тип b24:Lead по наличию специфичных для лида свойств. Каждого свойства по отдельности достаточно для вывода типа."@ru .
+
+b24:Lead a owl:Class ;
+    rdfs:label "Lead"@en ;
+    rdfs:label "Лид"@ru .
+
+# Эти свойства специфичны для лидов в текущей RDF-проекции.
+# По семантике rdfs:domain наличие любого из них классифицирует субъект как b24:Lead.
+b24:statusCode a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:statusSemantic a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:movedAt a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:dateTime .
+
+b24:sourceDescription a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:utmSource a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:utmMedium a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:utmCampaign a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:utmContent a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:utmTerm a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:originatorId a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:originId a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:string .
+
+b24:closedAt a owl:DatatypeProperty ;
+    rdfs:domain b24:Lead ;
+    rdfs:range xsd:dateTime .

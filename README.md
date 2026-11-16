@@ -1,6 +1,6 @@
 # CRM Pulse Monitor
 
-Read-only дашборд для текущей RDF-проекции Bitrix24. Сервер выполняет SPARQL `SELECT` к GraphDB или Apache Jena Fuseki, браузер получает результаты через JSON API. Дашборд не изменяет данные в CRM или RDF-хранилище.
+Дашборд для текущей RDF-проекции Bitrix24. Страницы показателей только читают RDF через SPARQL `SELECT`; административная страница `/ontologies` управляет файлами Turtle и их именованными графами в GraphDB. Изменение файла и публикация — отдельные действия.
 
 ## Страницы
 
@@ -40,7 +40,7 @@ Read-only дашборд для текущей RDF-проекции Bitrix24. С
 
 ## Локальный запуск
 
-Нужен Python 3.10 или новее; внешние Python-пакеты не требуются.
+Нужен Python 3.10 или новее и зависимость `rdflib` (установите через `pip install rdflib` либо `uv sync`).
 
 ```bash
 cp .env.example .env
@@ -51,7 +51,8 @@ cp .env.example .env
 - `RDF_BACKEND=graphdb` или `RDF_BACKEND=fuseki`;
 - для GraphDB задайте `RDF_URL` и `GRAPHDB_REPOSITORY`; для Fuseki задайте `RDF_URL` как URL dataset, например `http://127.0.0.1:3030/Persistent` (сервер добавит `/query`, если его нет в URL);
 - задайте `GRAPH_PREFIX` для RDF-проекции. Для параллельного источника используются GraphDB `http://127.0.0.1:7200/`, repository `bitrix24_v2_parallel` и префикс `urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:`;
-- если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`.
+- если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`; для GraphDB эти учётные данные используются и при публикации.
+- задайте длинный случайный `ONTOLOGY_ADMIN_TOKEN`, чтобы включить изменение онтологий. Без него страница доступна для чтения, а запись отключена.
 
 Запустите сервер:
 
@@ -59,11 +60,11 @@ cp .env.example .env
 python server.py
 ```
 
-Откройте <http://127.0.0.1:8082>. По умолчанию сервер привязан к `127.0.0.1:8082`; локальный адрес можно изменить через `DASHBOARD_HOST` и `DASHBOARD_PORT`.
+Перед запуском для возможности сохранения убедитесь, что каталог `ontologies/` доступен текущему пользователю для записи. Откройте <http://127.0.0.1:8082>. По умолчанию сервер привязан к `127.0.0.1:8082`; локальный адрес можно изменить через `DASHBOARD_HOST` и `DASHBOARD_PORT`.
 
 ## Запуск в Docker Compose
 
-Compose подключает контейнер к существующей внешней Docker-сети GraphDB и публикует дашборд только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, а порт хоста — `8088`.
+Compose подключает `./ontologies` как постоянный том с записью (процесс UID 10001; задайте права каталогу на хосте, например `sudo chown -R 10001:10001 ontologies`), контейнер к существующей внешней Docker-сети GraphDB и публикует дашборд только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, а порт хоста — `8088`.
 
 ```bash
 cp .env.example .env
@@ -87,7 +88,13 @@ docker compose down
 ## Структура
 
 - `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей;
+- `ontology_admin.py` — безопасное сохранение TTL и публикация через Graph Store Protocol;
+- `static/ontologies.html`, `static/ontologies.js` — административный редактор онтологий;
 - `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
 - `static/index.html`, `static/leads.html`, `static/employees.html` — три страницы интерфейса;
 - `static/*.js` и `static/styles.css` — клиентская логика и стили;
 - `docs/` — справочные материалы о доступных RDF-признаках и онтологии.
+
+## Управление онтологиями
+
+На `/ontologies` введите `ONTOLOGY_ADMIN_TOKEN` (он хранится только в памяти открытой страницы), выберите файл либо загрузите локальный `.ttl`. Проверка и сохранение не меняют GraphDB. Для публикации нажмите отдельную кнопку: сервер читает только сохранённый файл, вычисляет URI графа из slug, отправляет Graph Store Protocol PUT и читает граф обратно для RDF-изоморфного сравнения. Fuseki вернёт 501. Подробности и схема URI описаны в [`ontologies/README.md`](ontologies/README.md).
