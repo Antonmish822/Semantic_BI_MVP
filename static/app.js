@@ -33,7 +33,6 @@ function renderPulse(data) {
   byId('connection').lastElementChild.textContent = data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён';
   byId('error').hidden = true;
   renderCategories(data.categories || []);
-  renderDistributionCategories(data.categories || []);
 }
 
 function renderCategories(categories) {
@@ -56,6 +55,7 @@ function renderDistributionCategories(categories) {
   }
   select.replaceChildren(...options);
   select.value = categories.some((item) => item.id === selected) ? selected : 'all';
+  return select.value;
 }
 
 function renderActivityDistribution(data) {
@@ -127,6 +127,10 @@ async function loadActivityDistribution() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Не удалось получить распределение сделок');
     if (requestId !== activityDistributionRequest) return;
+    if (renderDistributionCategories(data.categories || []) !== project) {
+      loadActivityDistribution();
+      return;
+    }
     renderActivityDistribution(data);
   } catch (error) {
     if (requestId !== activityDistributionRequest) return;

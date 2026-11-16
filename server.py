@@ -123,20 +123,27 @@ class RDFStoreClient:
         } for row in rows if value_text(row, "category_code")]
 
     def deal_activity_distribution(self, project: str = "all") -> dict[str, object]:
-        query = load_query("deal_activity_distribution.rq", self.graph_prefix)
-        query = query.replace("{{selected_project}}", sparql_literal(project))
-        rows = self.select(query)
+        rows = self.select(load_query("deal_activity_distribution.rq", self.graph_prefix))
         now = datetime.now(timezone.utc)
-        activity_by_deal: dict[str, datetime | None] = {}
+        activity_by_deal: dict[str, tuple[datetime | None, set[str]]] = {}
         for row in rows:
             deal = value_text(row, "deal")
             if not deal:
                 continue
             last_activity = parse_rdf_datetime(value_text(row, "last_activity_raw"))
-            if deal not in activity_by_deal or (
-                last_activity and (activity_by_deal[deal] is None or last_activity > activity_by_deal[deal])
-            ):
-                activity_by_deal[deal] = last_activity
+            category_code = value_text(row, "category_code")
+            existing_activity, category_codes = activity_by_deal.get(deal, (None, set()))
+            if last_activity and (existing_activity is None or last_activity > existing_activity):
+                existing_activity = last_activity
+            if category_code:
+                category_codes.add(category_code)
+            activity_by_deal[deal] = (existing_activity, category_codes)
+
+        active_category_ids = sorted({
+            category_code
+            for _, category_codes in activity_by_deal.values()
+            for category_code in category_codes
+        })
 
         buckets = [
             {"key": start, "label": f"{start}–{start + 5} дней", "deal_count": 0}
@@ -147,7 +154,11 @@ class RDFStoreClient:
             {"key": None, "label": "Нет даты", "deal_count": 0},
         ])
         counts = {bucket["key"]: bucket for bucket in buckets}
-        for last_activity in activity_by_deal.values():
+        matching_deals = 0
+        for last_activity, category_codes in activity_by_deal.values():
+            if project != "all" and project not in category_codes:
+                continue
+            matching_deals += 1
             if last_activity is None:
                 counts[None]["deal_count"] += 1
                 continue
@@ -158,7 +169,8 @@ class RDFStoreClient:
             "available": True,
             "backend": self.backend,
             "as_of": now.isoformat(),
-            "total_deals": len(activity_by_deal),
+            "total_deals": matching_deals,
+            "active_category_ids": active_category_ids,
             "buckets": buckets,
         }
 
@@ -586,7 +598,13 @@ class Handler(BaseHTTPRequestHandler):
                 if project != "all" and project not in valid_projects:
                     self._send_json(400, {"error": "Неизвестная категория проекта"})
                     return
-                self._send_json(200, get_deal_activity_distribution(project))
+                payload = dict(get_deal_activity_distribution(project))
+                active_category_ids = set(payload.pop("active_category_ids", []))
+                payload["categories"] = [
+                    category for category in get_categories()
+                    if category["id"] in active_category_ids
+                ]
+                self._send_json(200, payload)
             except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
                 self._send_json(502, {"error": "Не удалось получить распределение сделок по последней активности"})
                 self.log_error("CRM deal activity distribution query failed (%s)", type(exc).__name__)
