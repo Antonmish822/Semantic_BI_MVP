@@ -305,28 +305,71 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
         tool_call = payload.get("tool_call")
-        if isinstance(tool_call, dict) and isinstance(tool_call.get("name"), str):
-            arguments = tool_call.get("arguments") or {}
-            return {"name": tool_call["name"], "arguments": arguments if isinstance(arguments, dict) else {}}
+        if isinstance(tool_call, dict):
+            tool_name = tool_call.get("name") or tool_call.get("tool")
+            if isinstance(tool_name, str):
+                arguments = tool_call.get("arguments") or tool_call.get("args") or {}
+                return {"name": tool_name, "arguments": arguments if isinstance(arguments, dict) else {}}
 
         name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
         arguments: dict[str, object] | None = None
         if isinstance(payload.get("tool"), dict):
             nested = payload.get("tool")
             if isinstance(nested, dict):
-                name = nested.get("name") or name
+                name = nested.get("name") or nested.get("tool") or name
                 arguments = nested.get("arguments") if isinstance(nested.get("arguments"), dict) else None
+                if arguments is None and isinstance(nested.get("params"), dict):
+                    arguments = nested.get("params")
         if isinstance(payload.get("arguments"), dict):
             arguments = payload.get("arguments")
         if isinstance(payload.get("params"), dict):
             arguments = payload.get("params")
         if name == "sparql_select" and isinstance(payload.get("query"), str):
             arguments = {"query": payload.get("query")}
-        if name == "run_named_query" and isinstance(payload.get("parameters"), dict):
-            arguments = {"parameters": payload.get("parameters")}
+        if name == "run_named_query":
+            if isinstance(payload.get("parameters"), dict):
+                arguments = {"parameters": payload.get("parameters")}
+            elif isinstance(payload.get("params"), dict):
+                arguments = payload.get("params")
+            elif isinstance(payload.get("query_name"), str):
+                arguments = {"name": payload.get("query_name")}
         if isinstance(name, str):
+            if name == "run_named_query" and isinstance(arguments, dict):
+                if "query_name" in arguments and "name" not in arguments:
+                    arguments["name"] = arguments.pop("query_name")
+                if "params" in arguments and "parameters" not in arguments:
+                    arguments["parameters"] = arguments.pop("params")
             return {"name": name, "arguments": arguments if isinstance(arguments, dict) else {}}
         return None
+
+    def iter_json_objects(text: str) -> list[str]:
+        objects: list[str] = []
+        depth = 0
+        start: int | None = None
+        in_string = False
+        escape = False
+        for index, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = index
+                depth += 1
+            elif ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    objects.append(text[start:index + 1])
+                    start = None
+        return objects
 
     tool_call_tag = re.search(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     if tool_call_tag:
@@ -347,6 +390,15 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
     call = normalize_call(payload)
     if call:
         return call
+
+    for candidate_raw in iter_json_objects(content):
+        try:
+            candidate = json.loads(candidate_raw)
+        except json.JSONDecodeError:
+            continue
+        call = normalize_call(candidate)
+        if call:
+            return call
 
     for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
         try:
@@ -1566,7 +1618,10 @@ class Handler(BaseHTTPRequestHandler):
                 break
 
             if tool_steps == 0:
-                raise ValueError("Модель не вызвала MCP-инструмент или запросила запрещённый инструмент")
+                if not content:
+                    raise ValueError("Агент не смог сформировать ответ")
+                if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
+                    print("Agent reply without MCP tool call")
             if not content:
                 raise ValueError("Агент не смог сформировать финальный ответ после MCP")
 

@@ -83,11 +83,12 @@ def _tool_schemas() -> list[dict[str, Any]]:
 
 
 def _format_content(data: Any) -> dict[str, Any]:
+    text = json.dumps(data, ensure_ascii=False)
     return {
         "content": [
             {
-                "type": "json",
-                "json": data,
+                "type": "text",
+                "text": text,
             }
         ]
     }
@@ -146,7 +147,19 @@ class MCPHandler(BaseHTTPRequestHandler):
             payload = _read_json(self)
             method = payload.get("method")
             req_id = payload.get("id")
-            if method == "tools/list":
+            if os.environ.get("MCP_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
+                print(f"MCP request: {json.dumps(payload, ensure_ascii=False)}")
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {"name": "SemanticBIMCP", "version": "0.1"},
+                    "capabilities": {"tools": {}},
+                }
+            elif method == "notifications/initialized":
+                result = {}
+            elif method == "ping":
+                result = {}
+            elif method == "tools/list":
                 result = {"tools": _tool_schemas()}
             elif method == "tools/call":
                 params = payload.get("params") or {}
@@ -155,6 +168,12 @@ class MCPHandler(BaseHTTPRequestHandler):
                 if not tool_name:
                     raise JsonRpcError("Не указан инструмент", -32602)
                 result = _handle_tool_call(str(tool_name), arguments)
+            elif method == "resources/list":
+                result = {"resources": []}
+            elif method == "resources/templates/list":
+                result = {"templates": []}
+            elif method == "prompts/list":
+                result = {"prompts": []}
             else:
                 raise JsonRpcError("Метод не поддерживается", -32601)
             response = {"jsonrpc": "2.0", "id": req_id, "result": result}

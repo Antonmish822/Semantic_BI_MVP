@@ -23,6 +23,10 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 - `run_named_query` — запуск именованного запроса с параметрами.
 - `explain_schema` — краткая схема (классы, свойства, доступные признаки и `graph_prefix`).
 
+## Подключение из MCP‑клиентов (Zoo Code / Roo)
+
+Сервер поддерживает базовые методы MCP (`initialize`, `ping`, `resources/list`, `prompts/list`) и инструменты (`tools/list`, `tools/call`). Для подключения через `streamable-http` используйте URL `http://<host>:<port>/mcp`.
+
 ## Переменные окружения
 
 Параметры GraphDB те же, что у dashboard:
@@ -48,7 +52,11 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 
 ## Локальный запуск
 
-```bash
+Запускать нужно как модуль пакета, иначе относительные импорты не сработают. Если в `.env` для Docker указан `MCP_HOST=host.docker.internal`, то для локального запуска задайте loopback:
+
+```powershell
+$env:MCP_HOST = "127.0.0.1"
+$env:MCP_PORT = "8090"
 python -m mcp.mcp_server
 ```
 
