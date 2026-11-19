@@ -1,0 +1,20 @@
+PREFIX b24: <https://example.org/bitrix24#>
+
+SELECT ?source_code ?source_name (COUNT(DISTINCT ?lead) AS ?lead_count)
+WHERE {
+  GRAPH ?lead_graph {
+    ?lead b24:sourceCode ?source_code .
+  }
+  FILTER(STRSTARTS(STR(?lead_graph), {{graph_prefix}})
+         && CONTAINS(STR(?lead_graph), ":lead:"))
+  OPTIONAL {
+    GRAPH ?source_graph {
+      ?source b24:code ?source_code ;
+              b24:name ?source_name .
+    }
+    FILTER(STRSTARTS(STR(?source_graph), {{graph_prefix}})
+           && CONTAINS(STR(?source_graph), ":source:"))
+  }
+}
+GROUP BY ?source_code ?source_name
+ORDER BY DESC(?lead_count)

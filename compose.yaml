@@ -19,6 +19,27 @@ services:
     networks:
       - rdf_store
 
+  mcp-graphdb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - .env
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8090"
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+    command: ["python", "-m", "mcp.mcp_server"]
+    ports:
+      - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
+    networks:
+      - rdf_store
+
 networks:
   rdf_store:
     external: true

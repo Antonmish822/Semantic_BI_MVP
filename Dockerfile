@@ -5,7 +5,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 COPY server.py ./server.py
+COPY mcp ./mcp
 COPY queries ./queries
+COPY docs ./docs
 COPY static ./static
 
 RUN useradd --system --uid 10001 --no-create-home appuser
