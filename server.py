@@ -300,7 +300,22 @@ def _agent_system_prompt(tools: list[dict[str, object]]) -> str:
     return base_prompt + tools_hint
 
 
+def _looks_like_tool_call(content: str) -> bool:
+    cleaned = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
+    return bool(re.search(
+        r"(\"tool_call\"|\"tool\"\s*:|\b(run_named_query|list_queries|explain_schema|sparql_select)\b)",
+        cleaned,
+    ))
+
+
 def _extract_tool_call(content: str) -> dict[str, object] | None:
+    calls = _extract_tool_calls(content)
+    return calls[0] if calls else None
+
+
+def _extract_tool_calls(content: str) -> list[dict[str, object]]:
+    content = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
+
     def normalize_call(payload: object) -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
@@ -310,6 +325,16 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             if isinstance(tool_name, str):
                 arguments = tool_call.get("arguments") or tool_call.get("args") or {}
                 return {"name": tool_name, "arguments": arguments if isinstance(arguments, dict) else {}}
+
+        tool_calls = payload.get("tool_calls")
+        if isinstance(tool_calls, list):
+            items: list[dict[str, object]] = []
+            for item in tool_calls:
+                normalized = normalize_call(item)
+                if normalized:
+                    items.append(normalized)
+            if items:
+                return {"__batch__": items}
 
         name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
         arguments: dict[str, object] | None = None
@@ -371,43 +396,56 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
                     start = None
         return objects
 
-    tool_call_tag = re.search(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
-    if tool_call_tag:
-        raw_args = tool_call_tag.group(1).strip()
-        if raw_args:
-            try:
-                candidate = json.loads(raw_args)
-            except json.JSONDecodeError:
-                candidate = None
-            call = normalize_call(candidate)
-            if call:
-                return call
+    def append_call(result: dict[str, object] | None, calls: list[dict[str, object]]) -> None:
+        if not result:
+            return
+        if "__batch__" in result:
+            calls.extend(result["__batch__"])
+        else:
+            calls.append(result)
+
+    calls: list[dict[str, object]] = []
+    for match in re.finditer(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL):
+        raw_args = match.group(1).strip()
+        if not raw_args:
+            continue
+        try:
+            candidate = json.loads(raw_args)
+        except json.JSONDecodeError:
+            candidate = None
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     try:
         payload = json.loads(content)
     except json.JSONDecodeError:
         payload = None
-    call = normalize_call(payload)
-    if call:
-        return call
+    if isinstance(payload, list):
+        for item in payload:
+            append_call(normalize_call(item), calls)
+    else:
+        append_call(normalize_call(payload), calls)
+    if calls:
+        return calls
 
     for candidate_raw in iter_json_objects(content):
         try:
             candidate = json.loads(candidate_raw)
         except json.JSONDecodeError:
             continue
-        call = normalize_call(candidate)
-        if call:
-            return call
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
         try:
             candidate = json.loads(match.group(0))
         except json.JSONDecodeError:
             continue
-        call = normalize_call(candidate)
-        if call:
-            return call
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     invoke_match = re.search(r"<invoke\s+name=\"([\w_\-]+)\">(.*?)</invoke>", content, re.DOTALL)
     if not invoke_match:
@@ -424,21 +462,21 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
                 arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": name, "arguments": arguments}
+        return [{"name": name, "arguments": arguments}]
 
     tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
     if tool_tag:
         name = tool_tag.group(1)
         raw_args = tool_tag.group(2).strip()
         if not raw_args:
-            return {"name": name, "arguments": {}}
+            return [{"name": name, "arguments": {}}]
         try:
             arguments = json.loads(raw_args)
         except json.JSONDecodeError:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": name, "arguments": arguments}
+        return [{"name": name, "arguments": arguments}]
 
     for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
         tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
@@ -448,20 +486,20 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             continue
         raw_args = tag_match.group(1).strip()
         if not raw_args:
-            return {"name": tag, "arguments": {}}
+            return [{"name": tag, "arguments": {}}]
         try:
             arguments = json.loads(raw_args)
         except json.JSONDecodeError:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": tag, "arguments": arguments}
+        return [{"name": tag, "arguments": arguments}]
 
     to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
     if to_match:
-        return {"name": to_match.group(1), "arguments": {}}
+        return [{"name": to_match.group(1), "arguments": {}}]
 
-    return None
+    return []
 
 
 def _sanitize_history(raw: object) -> list[dict[str, str]]:
@@ -1567,14 +1605,16 @@ class Handler(BaseHTTPRequestHandler):
             messages.extend(history)
             messages.append({"role": "user", "content": message})
 
-            def request_tool_call() -> tuple[str, dict[str, object] | None]:
+            def request_tool_calls() -> tuple[str, list[dict[str, object]]]:
                 response = _polza_chat(messages)
                 raw = response.get("choices", [{}])[0].get("message", {}).get("content", "")
                 content_local = raw if isinstance(raw, str) else ""
-                call = _extract_tool_call(content_local)
-                if call and call.get("name") not in allowed_tools:
-                    call = None
-                return content_local, call
+                calls = _extract_tool_calls(content_local)
+                filtered: list[dict[str, object]] = []
+                for call in calls:
+                    if call.get("name") in allowed_tools:
+                        filtered.append(call)
+                return content_local, filtered
 
             max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
             tool_steps = 0
@@ -1582,26 +1622,38 @@ class Handler(BaseHTTPRequestHandler):
             last_tool: dict[str, object] | None = None
             last_tool_result: dict[str, object] | None = None
             for _ in range(max_steps):
-                content, tool_call = request_tool_call()
-                if tool_call:
-                    tool_name = str(tool_call["name"])
-                    last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
-                    if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
-                        print(f"Agent tool call: {tool_name} {json.dumps(tool_call['arguments'], ensure_ascii=False)}")
-                    tool_result = _mcp_tool_call(tool_name, tool_call["arguments"])
-                    last_tool_result = tool_result
-                    tool_steps += 1
-                    messages.append({"role": "assistant", "content": content})
+                content, tool_calls = request_tool_calls()
+                if tool_calls:
+                    assistant_payload = {"tool_calls": tool_calls} if len(tool_calls) > 1 else {"tool_call": tool_calls[0]}
                     messages.append({
-                        "role": "user",
-                        "content": "Результат вызова инструмента:\n" + json.dumps(
-                            tool_result, ensure_ascii=False
-                        ),
+                        "role": "assistant",
+                        "content": json.dumps(assistant_payload, ensure_ascii=False),
                     })
+                    for tool_call in tool_calls:
+                        tool_name = str(tool_call["name"])
+                        last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
+                        if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
+                            print(f"Agent tool call: {tool_name} {json.dumps(tool_call['arguments'], ensure_ascii=False)}")
+                        tool_result = _mcp_tool_call(tool_name, tool_call["arguments"])
+                        last_tool_result = tool_result
+                        tool_steps += 1
+                        messages.append({
+                            "role": "user",
+                            "content": "Результат вызова инструмента:\n" + json.dumps(
+                                tool_result, ensure_ascii=False
+                            ),
+                        })
                     messages.append({
                         "role": "system",
                         "content": "Если нужны дополнительные данные, вызови следующий MCP-инструмент. "
                                    "Иначе дай финальный ответ пользователю.",
+                    })
+                    continue
+
+                if _looks_like_tool_call(content):
+                    messages.append({
+                        "role": "system",
+                        "content": "Ты вывел вызов инструмента в чат. Ответь ТОЛЬКО JSON tool_call без текста.",
                     })
                     continue
 
