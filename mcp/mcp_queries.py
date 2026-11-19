@@ -96,6 +96,11 @@ NAMED_QUERIES: dict[str, NamedQuery] = {
             "после создания или отсутствует."
         ),
     ),
+    "recent_lead_activities": NamedQuery(
+        name="recent_lead_activities",
+        template_file="recent_lead_activities.rq",
+        description="Последние активности по лидам.",
+    ),
     "lead_conversion_trend": NamedQuery(
         name="lead_conversion_trend",
         template_file="lead_conversion_trend.rq",
