@@ -14,6 +14,19 @@ function setStatus(state, message) {
   agentStatus.lastElementChild.textContent = message;
 }
 
+function renderToolState(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const tool = payload.tool;
+  if (tool && typeof tool === 'object') {
+    const name = tool.name || 'инструмент';
+    setStatus('pending', `MCP: ${name}`);
+    return;
+  }
+  if (payload.tool_result) {
+    setStatus('pending', 'MCP: ответ получен');
+  }
+}
+
 function renderMessage(role, text) {
   const item = document.createElement('article');
   item.className = `chat-message chat-${role}`;
@@ -73,6 +86,7 @@ async function sendMessage(text) {
       throw new Error(data.error || 'Не удалось получить ответ агента');
     }
 
+    renderToolState(data);
     const reply = data.reply || 'Нет ответа от агента.';
     renderMessage('assistant', reply);
     history = Array.isArray(data.history) ? data.history : history;

@@ -200,34 +200,46 @@ def _read_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 512 * 1024
         raise ValueError("Некорректный JSON") from exc
 
 
-def _normalize_ollama_url(url: str) -> str:
-    if url.rstrip("/").endswith("/api/chat"):
-        return url
-    return url.rstrip("/") + "/api/chat"
-
-
-def _ollama_chat(messages: list[dict[str, str]]) -> dict[str, object]:
-    base_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-    url = _normalize_ollama_url(base_url)
+def _polza_chat(messages: list[dict[str, str]]) -> dict[str, object]:
+    base_url = os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1")
+    api_key = os.environ.get("POLZA_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Не задан POLZA_API_KEY")
+    url = base_url.rstrip("/") + "/chat/completions"
     payload = {
-        "model": os.environ.get("OLLAMA_MODEL", "llama3.1"),
+        "model": os.environ.get("POLZA_MODEL", "polza-chat"),
         "messages": messages,
         "stream": False,
     }
-    timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+    timeout = float(os.environ.get("POLZA_TIMEOUT", "60"))
     request = Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        try:
+            details = json.loads(body)
+        except json.JSONDecodeError:
+            details = {"message": body.strip() or "HTTPError"}
+        raise ValueError(f"Polza API error: {details}") from exc
 
 
 def _mcp_request(payload: dict[str, object]) -> dict[str, object]:
-    host = os.environ.get("MCP_HOST", "127.0.0.1")
-    port = int(os.environ.get("MCP_PORT", "8090"))
-    url = f"http://{host}:{port}/mcp"
+    agent_url = os.environ.get("AGENT_MCP_URL", "").strip()
+    if agent_url:
+        url = agent_url.rstrip("/") + "/mcp"
+    else:
+        host = os.environ.get("MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("MCP_PORT", "8090"))
+        url = f"http://{host}:{port}/mcp"
     timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
     request = Request(
         url,
@@ -244,6 +256,14 @@ def _mcp_tools_list() -> list[dict[str, object]]:
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
         raise ValueError("Некорректный ответ MCP")
+    return tools
+
+
+def _allowed_agent_tools() -> set[str]:
+    allow_sparql = os.environ.get("AGENT_ALLOW_SPARQL", "0").strip().lower()
+    tools = {"list_queries", "run_named_query", "explain_schema"}
+    if allow_sparql in {"1", "true", "yes"}:
+        tools.add("sparql_select")
     return tools
 
 
@@ -266,10 +286,13 @@ def _agent_system_prompt(tools: list[dict[str, object]]) -> str:
     base_prompt = os.environ.get(
         "AGENT_SYSTEM_PROMPT",
         "Ты — аналитический ассистент Semantic BI. "
-        "Отвечай по-русски. Если нужны данные, вызывай MCP-инструменты. "
+        "Отвечай по-русски. Для любых вопросов о данных ОБЯЗАТЕЛЬНО вызывай MCP-инструменты. "
+        "Запрещено сочинять SPARQL, префиксы или обращаться к графу без MCP. "
+        "Сначала запроси список доступных шаблонов (list_queries), затем запускай run_named_query. "
+        "Если не хватает понимания схемы — используй explain_schema. "
         "Чтобы вызвать инструмент, ответь ТОЛЬКО JSON без пояснений: "
         "{\"tool_call\":{\"name\":\"<tool>\",\"arguments\":{...}}}. "
-        "Если инструмент не нужен, отвечай обычным текстом.",
+        "НЕ используй формат <invoke ...> и НЕ добавляй обычный текст.",
     )
     tools_hint = "\nДоступные инструменты:\n" + "\n".join(
         f"- {tool.get('name')}: {tool.get('description', '')}" for tool in tools
@@ -278,23 +301,115 @@ def _agent_system_prompt(tools: list[dict[str, object]]) -> str:
 
 
 def _extract_tool_call(content: str) -> dict[str, object] | None:
+    def normalize_call(payload: object) -> dict[str, object] | None:
+        if not isinstance(payload, dict):
+            return None
+        tool_call = payload.get("tool_call")
+        if isinstance(tool_call, dict) and isinstance(tool_call.get("name"), str):
+            arguments = tool_call.get("arguments") or {}
+            return {"name": tool_call["name"], "arguments": arguments if isinstance(arguments, dict) else {}}
+
+        name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
+        arguments: dict[str, object] | None = None
+        if isinstance(payload.get("tool"), dict):
+            nested = payload.get("tool")
+            if isinstance(nested, dict):
+                name = nested.get("name") or name
+                arguments = nested.get("arguments") if isinstance(nested.get("arguments"), dict) else None
+        if isinstance(payload.get("arguments"), dict):
+            arguments = payload.get("arguments")
+        if isinstance(payload.get("params"), dict):
+            arguments = payload.get("params")
+        if name == "sparql_select" and isinstance(payload.get("query"), str):
+            arguments = {"query": payload.get("query")}
+        if name == "run_named_query" and isinstance(payload.get("parameters"), dict):
+            arguments = {"parameters": payload.get("parameters")}
+        if isinstance(name, str):
+            return {"name": name, "arguments": arguments if isinstance(arguments, dict) else {}}
+        return None
+
+    tool_call_tag = re.search(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
+    if tool_call_tag:
+        raw_args = tool_call_tag.group(1).strip()
+        if raw_args:
+            try:
+                candidate = json.loads(raw_args)
+            except json.JSONDecodeError:
+                candidate = None
+            call = normalize_call(candidate)
+            if call:
+                return call
+
     try:
         payload = json.loads(content)
     except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    tool_call = payload.get("tool_call")
-    if not isinstance(tool_call, dict):
-        return None
-    if not isinstance(tool_call.get("name"), str):
-        return None
-    arguments = tool_call.get("arguments")
-    if arguments is None:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        return None
-    return {"name": tool_call["name"], "arguments": arguments}
+        payload = None
+    call = normalize_call(payload)
+    if call:
+        return call
+
+    for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
+        try:
+            candidate = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        call = normalize_call(candidate)
+        if call:
+            return call
+
+    invoke_match = re.search(r"<invoke\s+name=\"([\w_\-]+)\">(.*?)</invoke>", content, re.DOTALL)
+    if not invoke_match:
+        invoke_match = re.search(r"<tool_call>\s*([\w_\-]+)\s*\((.*?)\)\s*</tool_call>", content, re.DOTALL)
+    if invoke_match:
+        name = invoke_match.group(1)
+        raw_args = invoke_match.group(2).strip()
+        if not raw_args:
+            arguments = {}
+        else:
+            try:
+                arguments = json.loads(raw_args)
+            except json.JSONDecodeError:
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return {"name": name, "arguments": arguments}
+
+    tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
+    if tool_tag:
+        name = tool_tag.group(1)
+        raw_args = tool_tag.group(2).strip()
+        if not raw_args:
+            return {"name": name, "arguments": {}}
+        try:
+            arguments = json.loads(raw_args)
+        except json.JSONDecodeError:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return {"name": name, "arguments": arguments}
+
+    for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
+        tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
+        if not tag_match:
+            tag_match = re.search(rf"<query\s+{tag}\b[^>]*>(.*?)</query>", content, re.DOTALL)
+        if not tag_match:
+            continue
+        raw_args = tag_match.group(1).strip()
+        if not raw_args:
+            return {"name": tag, "arguments": {}}
+        try:
+            arguments = json.loads(raw_args)
+        except json.JSONDecodeError:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return {"name": tag, "arguments": arguments}
+
+    to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
+    if to_match:
+        return {"name": to_match.group(1), "arguments": {}}
+
+    return None
 
 
 def _sanitize_history(raw: object) -> list[dict[str, str]]:
@@ -1393,31 +1508,67 @@ class Handler(BaseHTTPRequestHandler):
             max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
             history = history[-max_history:]
 
-            tools = _mcp_tools_list()
+            allowed_tools = _allowed_agent_tools()
+            tools = [tool for tool in _mcp_tools_list() if tool.get("name") in allowed_tools]
             system_prompt = _agent_system_prompt(tools)
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(history)
             messages.append({"role": "user", "content": message})
 
-            first = _ollama_chat(messages)
-            content = first.get("message", {}).get("content", "")
-            if not isinstance(content, str):
-                content = ""
+            def request_tool_call() -> tuple[str, dict[str, object] | None]:
+                response = _polza_chat(messages)
+                raw = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content_local = raw if isinstance(raw, str) else ""
+                call = _extract_tool_call(content_local)
+                if call and call.get("name") not in allowed_tools:
+                    call = None
+                return content_local, call
 
-            tool_call = _extract_tool_call(content)
-            if tool_call:
-                tool_result = _mcp_tool_call(tool_call["name"], tool_call["arguments"])
-                messages.append({"role": "assistant", "content": content})
-                messages.append({
-                    "role": "user",
-                    "content": "Результат вызова инструмента:\n" + json.dumps(
-                        tool_result, ensure_ascii=False
-                    ),
-                })
-                final = _ollama_chat(messages)
-                content = final.get("message", {}).get("content", "")
-                if not isinstance(content, str):
-                    content = ""
+            max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
+            tool_steps = 0
+            content = ""
+            last_tool: dict[str, object] | None = None
+            last_tool_result: dict[str, object] | None = None
+            for _ in range(max_steps):
+                content, tool_call = request_tool_call()
+                if tool_call:
+                    tool_name = str(tool_call["name"])
+                    last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
+                    if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
+                        print(f"Agent tool call: {tool_name} {json.dumps(tool_call['arguments'], ensure_ascii=False)}")
+                    tool_result = _mcp_tool_call(tool_name, tool_call["arguments"])
+                    last_tool_result = tool_result
+                    tool_steps += 1
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": "Результат вызова инструмента:\n" + json.dumps(
+                            tool_result, ensure_ascii=False
+                        ),
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": "Если нужны дополнительные данные, вызови следующий MCP-инструмент. "
+                                   "Иначе дай финальный ответ пользователю.",
+                    })
+                    continue
+
+                if tool_steps == 0:
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "system",
+                        "content": "Нужно вызвать MCP-инструмент и получить данные. "
+                                   f"Разрешены только: {', '.join(sorted(allowed_tools))}. "
+                                   "Ответь JSON tool_call.",
+                    })
+                    continue
+
+                break
+
+            if tool_steps == 0:
+                raise ValueError("Модель не вызвала MCP-инструмент или запросила запрещённый инструмент")
+            if not content:
+                raise ValueError("Агент не смог сформировать финальный ответ после MCP")
 
             new_history = history + [
                 {"role": "user", "content": message},
@@ -1426,7 +1577,12 @@ class Handler(BaseHTTPRequestHandler):
             new_history = new_history[-max_history:]
             with AGENT_SESSIONS_LOCK:
                 AGENT_SESSIONS[session_id] = new_history
-            self._send_json(200, {"session_id": session_id, "reply": content, "history": new_history})
+            response_payload = {"session_id": session_id, "reply": content, "history": new_history}
+            if last_tool:
+                response_payload["tool"] = last_tool
+            if last_tool_result is not None:
+                response_payload["tool_result"] = last_tool_result
+            self._send_json(200, response_payload)
         except (HTTPError, URLError, TimeoutError) as exc:
             self._send_json(502, {"error": "Не удалось связаться с агентом или MCP"})
             self.log_error("Agent backend error (%s)", type(exc).__name__)

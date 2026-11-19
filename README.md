@@ -86,15 +86,16 @@ Compose запускает контейнер с read-only корневой фа
 docker compose down
 ```
 
-## AI Agent (Ollama + MCP)
+## AI Agent (Polza.ai + MCP)
 
-Минимальный HTTP API доступен по `POST /api/agent` и использует локальную Ollama для генерации ответа и MCP-инструменты для выборок из RDF. История сообщений хранится в памяти процесса по `session_id`.
+Минимальный HTTP API доступен по `POST /api/agent` и использует Polza.ai (OpenAI‑совместимый API) для генерации ответа и MCP-инструменты для выборок из RDF. История сообщений хранится в памяти процесса по `session_id`.
 
 Переменные окружения:
 
-- `OLLAMA_URL` — базовый URL Ollama (по умолчанию `http://127.0.0.1:11434`);
-- `OLLAMA_MODEL` — модель Ollama (по умолчанию `llama3.1`);
-- `OLLAMA_TIMEOUT` — таймаут запросов Ollama в секундах (по умолчанию `60`);
+- `POLZA_BASE_URL` — базовый URL API (по умолчанию `https://polza.ai/api/v1`);
+- `POLZA_API_KEY` — ключ доступа к Polza.ai;
+- `POLZA_MODEL` — модель Polza.ai (по умолчанию `polza-chat`);
+- `POLZA_TIMEOUT` — таймаут запросов Polza.ai в секундах (по умолчанию `60`);
 - `MCP_TIMEOUT` — таймаут запросов MCP в секундах (по умолчанию `30`);
 - `AGENT_MAX_HISTORY` — максимальное число сообщений в истории (по умолчанию `12`);
 - `AGENT_SYSTEM_PROMPT` — системный промпт агента (опционально).

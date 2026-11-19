@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -58,6 +59,10 @@ def load_schema_summary() -> dict[str, object]:
         "prefixes": {
             "b24": "https://example.org/bitrix24#",
             "xsd": "http://www.w3.org/2001/XMLSchema#",
+            "graph_prefix": os.environ.get(
+                "GRAPH_PREFIX",
+                "urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:",
+            ),
         },
         "classes": classes,
         "object_properties": object_properties,

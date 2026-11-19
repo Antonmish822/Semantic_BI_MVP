@@ -18,10 +18,10 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 
 ## Инструменты MCP
 
-- `sparql_select` — выполнить read-only SPARQL `SELECT`.
+- `sparql_select` — выполнить read-only SPARQL `SELECT` (для агента обычно выключен).
 - `list_queries` — список именованных запросов и параметров.
 - `run_named_query` — запуск именованного запроса с параметрами.
-- `explain_schema` — краткая схема (классы, свойства, доступные признаки).
+- `explain_schema` — краткая схема (классы, свойства, доступные признаки и `graph_prefix`).
 
 ## Переменные окружения
 
@@ -40,6 +40,9 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 - `MCP_PORT` — порт, по умолчанию `8090`
 - `MCP_MAX_ROWS` — верхний лимит строк (если в запросе нет `LIMIT`)
 - `MCP_MAX_RESPONSE_BYTES` — лимит размера ответа JSON
+- `AGENT_MCP_URL` — отдельный URL MCP для агента (например, `http://127.0.0.1:8090`)
+- `AGENT_ALLOW_SPARQL` — разрешить агенту `sparql_select` (по умолчанию выключен)
+- `AGENT_DEBUG` — логировать вызовы MCP агентом
 
 Шаблон: [` .env.example`](.env.example)
 

@@ -13,7 +13,7 @@ services:
     environment:
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: "8088"
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      RDF_URL: ${RDF_URL_DOCKER:-http://host.docker.internal:7200}
     ports:
       - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
     networks:
@@ -33,7 +33,7 @@ services:
     environment:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8090"
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      RDF_URL: ${RDF_URL_DOCKER:-http://host.docker.internal:7200}
     command: ["python", "-m", "mcp.mcp_server"]
     ports:
       - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
