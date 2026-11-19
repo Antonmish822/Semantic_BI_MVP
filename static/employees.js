@@ -6,6 +6,79 @@ const dateFormat = new Intl.DateTimeFormat('ru-RU', {
 const byId = (id) => document.getElementById(id);
 let employeePulseRequest = 0;
 
+function updateSituationsPanel(payload) {
+  const panel = byId('situations-panel');
+  const list = byId('situations-list');
+  if (!panel || !list) return;
+  list.replaceChildren();
+  const situations = payload?.active_situations || [];
+  if (!Array.isArray(situations) || situations.length === 0) {
+    panel.hidden = true;
+    return;
+  }
+  situations.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'situation-item';
+
+    const title = document.createElement('div');
+    title.className = 'situation-name';
+    title.textContent = item.title || 'Ситуация';
+
+    const desc = document.createElement('div');
+    desc.className = 'situation-desc';
+    desc.textContent = item.description || '';
+
+    const priority = document.createElement('div');
+    priority.className = 'situation-priority';
+    priority.textContent = `Приоритет: ${numberFormat.format(Number(item.priority || 0))}`;
+
+    card.append(title, desc, priority);
+    list.append(card);
+  });
+  panel.hidden = false;
+}
+
+function applyViewProfile(payload) {
+  const container = byId('page-blocks');
+  if (!container) return;
+  const profile = payload?.view_profile || {};
+  const order = Array.isArray(profile.block_order) ? profile.block_order : [];
+  const highlights = new Set(Array.isArray(profile.highlights) ? profile.highlights : []);
+  const blocks = Array.from(container.querySelectorAll('[data-block]'));
+  const orderIndex = new Map(order.map((key, index) => [String(key), index]));
+  blocks.forEach((block) => {
+    const name = block.dataset.block || '';
+    const index = orderIndex.has(name) ? orderIndex.get(name) : Number.MAX_SAFE_INTEGER;
+    block.style.order = String(index);
+    block.classList.toggle('is-promoted', index < 2 && order.length > 0);
+    block.classList.toggle('is-highlighted', highlights.has(name));
+    block.hidden = order.length > 0 && !orderIndex.has(name);
+  });
+}
+
+async function loadViewState() {
+  try {
+    const project = byId('project-filter').value || 'all';
+    const employee = byId('lead-employee-filter').value || 'all';
+    const response = await fetch(`/api/view-state?page=employees&project=${encodeURIComponent(project)}&employee=${encodeURIComponent(employee)}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось получить состояние вида');
+    applyViewProfile(data);
+    updateSituationsPanel(data);
+    const defaults = data?.view_profile?.default_filters || {};
+    if (defaults.project === 'nonempty' && project === 'all') {
+      const select = byId('project-filter');
+      if (select && select.options.length > 1) {
+        select.value = select.options[1].value;
+        loadPortfolio();
+      }
+    }
+  } catch (error) {
+    const panel = byId('situations-panel');
+    if (panel) panel.hidden = true;
+  }
+}
+
 function formatDate(raw) {
   if (!raw) return 'Нет данных';
   const date = new Date(raw);
@@ -178,6 +251,7 @@ async function loadPortfolio() {
     byId('connection').lastElementChild.textContent = data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён';
     byId('updated').textContent = `Обновлено ${formatDate(data.as_of)}`;
     byId('error').hidden = true;
+    loadViewState();
   } catch (error) {
     byId('connection').className = 'connection offline';
     byId('connection').lastElementChild.textContent = 'Нет соединения';
@@ -210,12 +284,21 @@ async function loadEmployeePulse() {
 byId('refresh').addEventListener('click', () => {
   loadPortfolio();
   loadEmployeePulse();
+  loadViewState();
 });
-byId('project-filter').addEventListener('change', loadPortfolio);
-byId('lead-employee-filter').addEventListener('change', loadEmployeePulse);
+byId('project-filter').addEventListener('change', () => {
+  loadPortfolio();
+  loadViewState();
+});
+byId('lead-employee-filter').addEventListener('change', () => {
+  loadEmployeePulse();
+  loadViewState();
+});
 loadPortfolio();
 loadEmployeePulse();
+loadViewState();
 window.setInterval(() => {
   loadPortfolio();
   loadEmployeePulse();
+  loadViewState();
 }, 60_000);

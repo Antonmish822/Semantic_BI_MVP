@@ -41,7 +41,13 @@
 
     <div id="error" class="error-banner" hidden></div>
 
-    <section aria-labelledby="pulse-title">
+    <section id="situations-panel" class="panel situations-panel" hidden>
+      <h3 class="situations-title">Активные ситуации</h3>
+      <div id="situations-list"></div>
+    </section>
+
+    <div id="page-blocks" class="page-blocks">
+      <section id="deals-kpi" class="block" data-block="kpi" aria-labelledby="pulse-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">ТЕКУЩАЯ ВОРОНКА</p>
@@ -78,7 +84,7 @@
       </div>
     </section>
 
-    <section class="panel" aria-labelledby="activity-distribution-title">
+      <section id="deals-activity-distribution" class="panel block" data-block="deal_activity_distribution" aria-labelledby="activity-distribution-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">ДАВНОСТЬ АКТИВНОСТИ</p>
@@ -97,7 +103,7 @@
       <div id="activity-distribution-empty" class="empty-state" hidden>Нет сделок для распределения.</div>
     </section>
 
-    <section class="panel red-panel" aria-labelledby="red-title">
+      <section id="deals-red" class="panel red-panel block" data-block="red_deals" aria-labelledby="red-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow danger-eyebrow">ТРЕБУЮТ ВНИМАНИЯ</p>
@@ -122,7 +128,7 @@
       </div>
     </section>
 
-    <section class="panel activities-panel" aria-labelledby="activities-title">
+      <section id="deals-activities" class="panel activities-panel block" data-block="recent_activities" aria-labelledby="activities-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">ПОСЛЕДНИЕ СОБЫТИЯ</p>
@@ -144,6 +150,8 @@
         <div id="activities-empty" class="empty-state" hidden>Активностей по сделкам пока нет.</div>
       </div>
     </section>
+
+    </div>
 
     <footer>
       <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>

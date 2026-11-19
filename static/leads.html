@@ -34,7 +34,14 @@
     </nav>
 
     <div id="error" class="error-banner" hidden></div>
-    <section aria-labelledby="leads-title">
+
+    <section id="situations-panel" class="panel situations-panel" hidden>
+      <h3 class="situations-title">Активные ситуации</h3>
+      <div id="situations-list"></div>
+    </section>
+
+    <div id="page-blocks" class="page-blocks">
+      <section id="leads-kpi" class="block" data-block="kpi" aria-labelledby="leads-title">
       <div class="section-heading">
         <div>
           <p class="eyebrow">ВХОДЯЩИЙ ПОТОК</p>
@@ -71,7 +78,7 @@
       </div>
     </section>
 
-    <section class="panel" aria-labelledby="red-leads-title">
+      <section id="leads-red" class="panel block" data-block="red_leads" aria-labelledby="red-leads-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">КОНТРОЛЬ РЕАКЦИИ</p>
@@ -89,7 +96,7 @@
       <div id="leads-empty" class="empty-state" hidden>Красных лидов нет.</div>
     </section>
 
-    <section class="panel" aria-labelledby="conversion-trend-title">
+      <section id="leads-conversion-trend" class="panel block" data-block="conversion_trend" aria-labelledby="conversion-trend-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">СКОРОСТЬ КОНВЕРСИИ</p>
@@ -107,7 +114,7 @@
       <div id="conversion-trend-chart" class="response-trend-chart" role="img" aria-label="График среднего времени конвертации лидов в сделки по дням"></div>
     </section>
 
-    <section class="panel" aria-labelledby="response-trend-title">
+      <section id="leads-response-trend" class="panel block" data-block="response_trend" aria-labelledby="response-trend-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">СКОРОСТЬ ОБРАБОТКИ</p>
@@ -118,6 +125,8 @@
       <div id="response-trend-empty" class="empty-state" hidden>Недостаточно данных для графика.</div>
       <div id="response-trend-chart" class="response-trend-chart" role="img" aria-label="График среднего времени до первой активности по дням"></div>
     </section>
+
+    </div>
 
     <footer>
       <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>
