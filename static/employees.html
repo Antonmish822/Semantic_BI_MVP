@@ -41,7 +41,13 @@
 
     <div id="error" class="error-banner" hidden></div>
 
-    <section class="panel" aria-labelledby="employee-pulse-title">
+    <section id="situations-panel" class="panel situations-panel" hidden>
+      <h3 class="situations-title">Активные ситуации</h3>
+      <div id="situations-list"></div>
+    </section>
+
+    <div id="page-blocks" class="page-blocks">
+      <section id="employees-pulse" class="panel block" data-block="employee_pulse" aria-labelledby="employee-pulse-title">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">ЭФФЕКТИВНОСТЬ КОМАНДЫ</p>
@@ -63,7 +69,7 @@
       <div id="employee-pulse-chart" class="response-trend-chart" role="img" aria-label="График скорости реакции и конвертации по дням"></div>
     </section>
 
-    <section class="panel team-panel" aria-labelledby="team-title">
+      <section id="employees-table" class="panel team-panel block" data-block="employees_table" aria-labelledby="team-title">
       <div class="panel-heading team-heading">
         <div>
           <p class="eyebrow">НАГРУЗКА И РЕАКЦИЯ</p>
@@ -80,6 +86,8 @@
       </div>
       <div id="portfolio-empty" class="empty-state" hidden>Нет сотрудников с активными сделками P.</div>
     </section>
+
+    </div>
 
     <footer>
       <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>

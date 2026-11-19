@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,14 +18,157 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+DOCS = ROOT / "docs"
+RULES = ROOT / "rules"
 CACHE_SECONDS = 30
-CACHE: dict[str, object] = {"pulse": {}, "categories_at": 0.0,
-                           "categories": None, "red_deals": {},
-                           "recent_activities_at": 0.0, "recent_activities": {},
-                           "lead_pulse_at": 0.0, "lead_pulse": None,
-                           "lead_conversion_trend": {}, "lead_employee_pulse": {},
-                           "deal_activity_distribution": {}}
-CACHE_LOCK = threading.Lock()
+CACHE: dict[str, object] = {
+    "pulse": {},
+    "categories_at": 0.0,
+    "categories": None,
+    "red_deals": {},
+    "recent_activities_at": 0.0,
+    "recent_activities": {},
+    "lead_pulse_at": 0.0,
+    "lead_pulse": None,
+    "lead_conversion_trend": {},
+    "lead_employee_pulse": {},
+    "deal_activity_distribution": {},
+    "view_state": {},
+    "ontology_profile": None,
+    "ontology_profile_at": 0.0,
+    "rules": None,
+    "rules_at": 0.0,
+}
+DEFAULT_RULES: dict[str, object] = {
+    "pages": {
+        "deals": {
+            "required_entities": ["Deal", "Activity", "Category", "User"],
+            "required_features": [
+                "deal.stageSemantic",
+                "deal.lastActivityTime",
+                "deal.assignedTo",
+                "activity.ownerTypeId",
+                "activity.createdAt",
+            ],
+            "situations": [
+                {
+                    "id": "red_deals_spike",
+                    "title": "Всплеск красных сделок",
+                    "description": "Доля красных сделок превышает порог за последнюю неделю.",
+                    "priority": 100,
+                    "when": {
+                        "metric": "red_deals_ratio",
+                        "operator": ">=",
+                        "threshold": 0.18,
+                    },
+                    "effect": {
+                        "promote_blocks": ["red_deals", "deal_activity_distribution"],
+                        "highlights": ["red_deals"],
+                        "default_filters": {"project": "nonempty"},
+                    },
+                },
+                {
+                    "id": "activity_stagnation",
+                    "title": "Застой по активности",
+                    "description": "Растёт доля сделок без активности более 30 дней.",
+                    "priority": 70,
+                    "when": {
+                        "metric": "stagnated_deals_ratio",
+                        "operator": ">=",
+                        "threshold": 0.25,
+                    },
+                    "effect": {
+                        "promote_blocks": ["deal_activity_distribution", "recent_activities"],
+                        "highlights": ["deal_activity_distribution"],
+                    },
+                },
+            ],
+        },
+        "leads": {
+            "required_entities": ["Lead", "Deal", "Activity", "User", "Source"],
+            "required_features": [
+                "lead.createdAt",
+                "activity.createdAt",
+                "deal.originLead",
+                "lead.assignedTo",
+            ],
+            "situations": [
+                {
+                    "id": "slow_response",
+                    "title": "Рост времени реакции",
+                    "description": "Среднее время до первой активности по лидам растёт.",
+                    "priority": 90,
+                    "when": {
+                        "all": [
+                            {
+                                "metric": "avg_response_minutes",
+                                "operator": ">=",
+                                "threshold": 180,
+                            },
+                            {
+                                "metric": "response_trend_growth_ratio",
+                                "operator": ">=",
+                                "threshold": 0.15,
+                            },
+                        ]
+                    },
+                    "effect": {
+                        "promote_blocks": ["response_trend", "red_leads"],
+                        "highlights": ["response_trend"],
+                        "default_filters": {"employee": "all"},
+                    },
+                },
+                {
+                    "id": "conversion_drop",
+                    "title": "Провал конверсии",
+                    "description": "Среднее время конверсии растёт быстрее нормы.",
+                    "priority": 80,
+                    "when": {
+                        "metric": "conversion_trend_growth_ratio",
+                        "operator": ">=",
+                        "threshold": 0.2,
+                    },
+                    "effect": {
+                        "promote_blocks": ["conversion_trend", "red_leads"],
+                        "highlights": ["conversion_trend"],
+                    },
+                },
+            ],
+        },
+        "employees": {
+            "required_entities": ["User", "Deal", "Activity", "Lead"],
+            "required_features": [
+                "deal.assignedTo",
+                "activity.responsible",
+                "lead.assignedTo",
+            ],
+            "situations": [
+                {
+                    "id": "portfolio_growth",
+                    "title": "Нагрузка на сотрудников",
+                    "description": "Средний портфель сделок у топ-20 сотрудников растёт.",
+                    "priority": 60,
+                    "when": {
+                        "metric": "top20_avg_active_deals",
+                        "operator": ">=",
+                        "threshold": 18,
+                    },
+                    "effect": {
+                        "promote_blocks": ["employees_table"],
+                        "highlights": ["employees_table"],
+                        "default_filters": {"project": "nonempty"},
+                    },
+                }
+            ],
+        },
+    }
+}
+CACHE_LOCK = threading.RLock()
+GRAPH_QUERY_EXCEPTIONS = (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError, json.JSONDecodeError)
+
+
+def cache_fallback_enabled() -> bool:
+    return os.environ.get("CACHE_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_env() -> None:
@@ -472,9 +617,14 @@ def get_pulse(project: str = "all") -> dict[str, object]:
         cached = cache.get(project)
         if cached is not None and now - cached[0] < CACHE_SECONDS:
             return cached[1]
-        payload = create_store_client().pulse(project)
-        cache[project] = (now, payload)
-        return payload
+        try:
+            payload = create_store_client().pulse(project)
+            cache[project] = (now, payload)
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached is not None:
+                return cached[1]
+            raise
 
 
 def get_categories() -> list[dict[str, str]]:
@@ -483,10 +633,15 @@ def get_categories() -> list[dict[str, str]]:
         cached = CACHE.get("categories")
         if cached is not None and now - float(CACHE["categories_at"]) < CACHE_SECONDS:
             return cached  # type: ignore[return-value]
-        rows = create_store_client().categories()
-        CACHE["categories_at"] = now
-        CACHE["categories"] = rows
-        return rows
+        try:
+            rows = create_store_client().categories()
+            CACHE["categories_at"] = now
+            CACHE["categories"] = rows
+            return rows
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and isinstance(cached, list):
+                return cached
+            raise
 
 
 def get_deal_activity_distribution(project: str = "all") -> dict[str, object]:
@@ -497,11 +652,14 @@ def get_deal_activity_distribution(project: str = "all") -> dict[str, object]:
         cached = cache.get(project)
         if cached is not None and now - cached[0] < CACHE_SECONDS:
             return cached[1]
-        payload = create_store_client().deal_activity_distribution(project)
-        cache[project] = (now, payload)
-        return payload
-
-
+        try:
+            payload = create_store_client().deal_activity_distribution(project)
+            cache[project] = (now, payload)
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached is not None:
+                return cached[1]
+            raise
 def get_red_deals(project: str = "all") -> list[dict[str, str | None]]:
     now = time.monotonic()
     with CACHE_LOCK:
@@ -510,10 +668,15 @@ def get_red_deals(project: str = "all") -> list[dict[str, str | None]]:
         cached_project = cache.get(project)
         if cached_project is not None and now - cached_project[0] < CACHE_SECONDS:
             return cached_project[1]
-        rows = create_store_client().red_deals(project)
-        cache[project] = (now, rows)
-        CACHE["red_deals"] = cache
-        return rows
+        try:
+            rows = create_store_client().red_deals(project)
+            cache[project] = (now, rows)
+            CACHE["red_deals"] = cache
+            return rows
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached_project is not None:
+                return cached_project[1]
+            raise
 
 
 def get_recent_activities(project: str = "all") -> list[dict[str, str | None]]:
@@ -524,10 +687,15 @@ def get_recent_activities(project: str = "all") -> list[dict[str, str | None]]:
         cached_project = cache.get(project)
         if cached_project is not None and now - cached_project[0] < CACHE_SECONDS:
             return cached_project[1]
-        rows = create_store_client().recent_activities(project)
-        cache[project] = (now, rows)
-        CACHE["recent_activities"] = cache
-        return rows
+        try:
+            rows = create_store_client().recent_activities(project)
+            cache[project] = (now, rows)
+            CACHE["recent_activities"] = cache
+            return rows
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached_project is not None:
+                return cached_project[1]
+            raise
 
 
 def get_lead_conversion_trend(category: str = "all") -> dict[str, object]:
@@ -538,9 +706,31 @@ def get_lead_conversion_trend(category: str = "all") -> dict[str, object]:
         cached = cache.get(category)
         if cached is not None and now - cached[0] < CACHE_SECONDS:
             return cached[1]
-        payload = create_store_client().lead_conversion_trend(category)
-        cache[category] = (now, payload)
-        return payload
+        try:
+            payload = create_store_client().lead_conversion_trend(category)
+            cache[category] = (now, payload)
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached is not None:
+                return cached[1]
+            raise
+
+
+def get_lead_pulse() -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cached = CACHE.get("lead_pulse")
+        if cached is not None and now - float(CACHE["lead_pulse_at"]) < CACHE_SECONDS:
+            return cached  # type: ignore[return-value]
+        try:
+            payload = create_store_client().lead_pulse()
+            CACHE["lead_pulse_at"] = now
+            CACHE["lead_pulse"] = payload
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and isinstance(cached, dict):
+                return cached
+            raise
 
 
 def get_lead_employee_pulse(employee: str = "all") -> dict[str, object]:
@@ -551,9 +741,337 @@ def get_lead_employee_pulse(employee: str = "all") -> dict[str, object]:
         cached = cache.get(employee)
         if cached is not None and now - cached[0] < CACHE_SECONDS:
             return cached[1]
-        payload = create_store_client().lead_employee_pulse(employee)
-        cache[employee] = (now, payload)
-        return payload
+        try:
+            payload = create_store_client().lead_employee_pulse(employee)
+            cache[employee] = (now, payload)
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached is not None:
+                return cached[1]
+            raise
+
+
+
+
+def normalize_feature_uri(uri: str) -> str:
+    cleaned = uri.strip().rstrip("/").rstrip("#")
+    if "#" in cleaned:
+        tail = cleaned.rsplit("#", 1)[-1]
+    else:
+        tail = cleaned.rsplit("/", 1)[-1]
+    return tail[:1].lower() + tail[1:] if tail else tail
+
+
+def load_ontology_profile() -> dict[str, object]:
+    ttl_path = DOCS / "ontology.ttl"
+    features_path = DOCS / "доступные_признаки_сущностей.csv"
+    ttl_text = ttl_path.read_text(encoding="utf-8") if ttl_path.is_file() else ""
+    entities = sorted(set(re.findall(r"^\s*:(\w+)\s+a\s+owl:Class", ttl_text, flags=re.MULTILINE)))
+    ttl_features = sorted(set(re.findall(r"^\s*:(\w+)\s+a\s+owl:DatatypeProperty", ttl_text, flags=re.MULTILINE)))
+    rows: list[dict[str, str]] = []
+    if features_path.is_file():
+        with features_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                entity_type = (row.get("entity_type") or "").strip().lower()
+                uri = (row.get("p") or "").strip()
+                if not entity_type or not uri:
+                    continue
+                rows.append({"entity_type": entity_type, "feature": normalize_feature_uri(uri)})
+    entity_feature_map: dict[str, list[str]] = {}
+    for row in rows:
+        key = row["entity_type"]
+        entity_feature_map.setdefault(key, []).append(row["feature"])
+    for key, values in entity_feature_map.items():
+        entity_feature_map[key] = sorted(set(values))
+    csv_features = sorted({row["feature"] for row in rows})
+    return {
+        "entities": entities,
+        "features": sorted(set(ttl_features) | set(csv_features)),
+        "entity_features": entity_feature_map,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_ontology_profile() -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cached = CACHE.get("ontology_profile")
+        if cached is not None and now - float(CACHE.get("ontology_profile_at", 0.0)) < CACHE_SECONDS:
+            return cached  # type: ignore[return-value]
+        profile = load_ontology_profile()
+        CACHE["ontology_profile"] = profile
+        CACHE["ontology_profile_at"] = now
+        return profile
+
+
+def load_smart_view_rules() -> dict[str, object]:
+    path = RULES / "smart_view_rules.json"
+    if not path.is_file():
+        return DEFAULT_RULES
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def get_smart_view_rules() -> dict[str, object]:
+    now = time.monotonic()
+    with CACHE_LOCK:
+        cached = CACHE.get("rules")
+        if cached is not None and now - float(CACHE.get("rules_at", 0.0)) < CACHE_SECONDS:
+            return cached  # type: ignore[return-value]
+        rules = load_smart_view_rules()
+        CACHE["rules"] = rules
+        CACHE["rules_at"] = now
+        return rules
+
+
+def compare_metric(left: float | int | None, operator: str, right: float | int) -> bool:
+    if left is None:
+        return False
+    if operator == ">":
+        return left > right
+    if operator == ">=":
+        return left >= right
+    if operator == "<":
+        return left < right
+    if operator == "<=":
+        return left <= right
+    if operator == "==":
+        return left == right
+    if operator == "!=":
+        return left != right
+    return False
+
+
+def compute_growth_ratio(values: list[float]) -> float | None:
+    if len(values) < 10:
+        return None
+    midpoint = len(values) // 2
+    early = values[:midpoint]
+    late = values[midpoint:]
+    early_avg = average(early)
+    late_avg = average(late)
+    if early_avg is None or late_avg is None or early_avg <= 0:
+        return None
+    return (late_avg - early_avg) / early_avg
+
+
+def evaluate_condition(condition: dict[str, object], metrics: dict[str, float | int | None]) -> bool:
+    if "all" in condition and isinstance(condition["all"], list):
+        return all(
+            isinstance(item, dict) and evaluate_condition(item, metrics)
+            for item in condition["all"]
+        )
+    if "any" in condition and isinstance(condition["any"], list):
+        return any(
+            isinstance(item, dict) and evaluate_condition(item, metrics)
+            for item in condition["any"]
+        )
+    metric_name = str(condition.get("metric", "")).strip()
+    operator = str(condition.get("operator", ">=")).strip()
+    threshold_raw = condition.get("threshold", 0)
+    threshold = float(threshold_raw) if isinstance(threshold_raw, (float, int, str)) else 0.0
+    metric_value = metrics.get(metric_name)
+    numeric = float(metric_value) if isinstance(metric_value, (int, float)) else None
+    return compare_metric(numeric, operator, threshold)
+
+
+def build_deals_metrics(project: str) -> dict[str, float | int | None]:
+    pulse = get_pulse(project)
+    summary = pulse.get("summary", {}) if isinstance(pulse, dict) else {}
+    active_deals = int(summary.get("active_deals", 0)) if isinstance(summary, dict) else 0
+    red_count = len(get_red_deals(project))
+    distribution = get_deal_activity_distribution(project)
+    buckets = distribution.get("buckets", []) if isinstance(distribution, dict) else []
+    stagnated = 0
+    if isinstance(buckets, list):
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            if bucket.get("key") == 30:
+                stagnated = int(bucket.get("deal_count", 0))
+                break
+    return {
+        "active_deals": active_deals,
+        "red_deals_count": red_count,
+        "red_deals_ratio": (red_count / active_deals) if active_deals > 0 else None,
+        "stagnated_deals_count": stagnated,
+        "stagnated_deals_ratio": (stagnated / active_deals) if active_deals > 0 else None,
+    }
+
+
+def build_leads_metrics(category: str, employee: str) -> dict[str, float | int | None]:
+    try:
+        lead_pulse = get_lead_pulse()
+    except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError):
+        lead_pulse = {"summary": {}, "response_trend": [], "red_leads": []}
+
+    summary = lead_pulse.get("summary", {}) if isinstance(lead_pulse, dict) else {}
+    response_trend = lead_pulse.get("response_trend", []) if isinstance(lead_pulse, dict) else []
+    response_values = [
+        float(point["average_response_minutes"])
+        for point in response_trend
+        if isinstance(point, dict) and isinstance(point.get("average_response_minutes"), (float, int))
+    ]
+
+    try:
+        conversion = get_lead_conversion_trend(category)
+    except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError):
+        conversion = {"conversion_trend": []}
+    conversion_trend = conversion.get("conversion_trend", []) if isinstance(conversion, dict) else []
+    conversion_values = [
+        float(point["average_conversion_minutes"])
+        for point in conversion_trend
+        if isinstance(point, dict) and isinstance(point.get("average_conversion_minutes"), (float, int))
+    ]
+
+    try:
+        employee_pulse = get_lead_employee_pulse(employee)
+    except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError):
+        employee_pulse = {"employee_trend": []}
+    employee_trend = employee_pulse.get("employee_trend", []) if isinstance(employee_pulse, dict) else []
+    employee_response_values = [
+        float(point["average_response_minutes"])
+        for point in employee_trend
+        if isinstance(point, dict) and isinstance(point.get("average_response_minutes"), (float, int))
+    ]
+
+    avg_response = summary.get("average_response_minutes") if isinstance(summary, dict) else None
+    return {
+        "avg_response_minutes": float(avg_response) if isinstance(avg_response, (float, int)) else None,
+        "response_trend_growth_ratio": compute_growth_ratio(response_values),
+        "conversion_trend_growth_ratio": compute_growth_ratio(conversion_values),
+        "employee_response_growth_ratio": compute_growth_ratio(employee_response_values),
+        "red_leads_count": len(lead_pulse.get("red_leads", [])) if isinstance(lead_pulse, dict) else 0,
+    }
+
+
+def build_employees_metrics(project: str) -> dict[str, float | int | None]:
+    pulse = get_pulse(project)
+    employees = pulse.get("employees", []) if isinstance(pulse, dict) else []
+    top = [
+        int(item.get("active_deals", 0))
+        for item in employees[:20]
+        if isinstance(item, dict)
+    ]
+    return {
+        "top20_avg_active_deals": average([float(v) for v in top]) if top else 0.0,
+        "top20_max_active_deals": max(top) if top else 0,
+    }
+
+
+def reorder_blocks(default_order: list[str], promoted: list[str]) -> list[str]:
+    promoted_unique = []
+    seen = set()
+    for block in promoted:
+        if block not in seen:
+            promoted_unique.append(block)
+            seen.add(block)
+    remainder = [block for block in default_order if block not in seen]
+    tail = [block for block in promoted_unique if block not in default_order]
+    return promoted_unique + remainder + tail
+
+
+def default_block_order(page: str) -> list[str]:
+    if page == "deals":
+        return ["kpi", "deal_activity_distribution", "red_deals", "recent_activities"]
+    if page == "leads":
+        return ["kpi", "red_leads", "conversion_trend", "response_trend"]
+    return ["employee_pulse", "employees_table"]
+
+
+def build_view_state(page: str, project: str, category: str, employee: str) -> dict[str, object]:
+    rules = get_smart_view_rules()
+    pages = rules.get("pages", {}) if isinstance(rules, dict) else {}
+    page_rules = pages.get(page, {}) if isinstance(pages, dict) else {}
+    ontology = get_ontology_profile()
+    entities = set(ontology.get("entities", [])) if isinstance(ontology, dict) else set()
+    features = set(ontology.get("features", [])) if isinstance(ontology, dict) else set()
+
+    required_entities = page_rules.get("required_entities", []) if isinstance(page_rules, dict) else []
+    required_features = page_rules.get("required_features", []) if isinstance(page_rules, dict) else []
+
+    missing_entities = [item for item in required_entities if item not in entities]
+    normalized_required_features = [item.rsplit(".", 1)[-1] for item in required_features]
+    missing_features = [item for item in normalized_required_features if item not in features]
+
+    if page == "deals":
+        metrics = build_deals_metrics(project)
+    elif page == "leads":
+        metrics = build_leads_metrics(category, employee)
+    else:
+        metrics = build_employees_metrics(project)
+
+    situations = page_rules.get("situations", []) if isinstance(page_rules, dict) else []
+    active_situations = []
+    promoted_blocks: list[str] = []
+    default_filters: dict[str, str] = {}
+    highlights: list[str] = []
+
+    for item in situations:
+        if not isinstance(item, dict):
+            continue
+        condition = item.get("when", {})
+        if not isinstance(condition, dict) or not evaluate_condition(condition, metrics):
+            continue
+        effect = item.get("effect", {}) if isinstance(item.get("effect", {}), dict) else {}
+        promoted_blocks.extend(effect.get("promote_blocks", []) if isinstance(effect.get("promote_blocks", []), list) else [])
+        highlights.extend(effect.get("highlights", []) if isinstance(effect.get("highlights", []), list) else [])
+        defaults = effect.get("default_filters", {})
+        if isinstance(defaults, dict):
+            for key, value in defaults.items():
+                if key not in default_filters and isinstance(value, str):
+                    default_filters[key] = value
+        active_situations.append({
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "description": item.get("description"),
+            "priority": int(item.get("priority", 0)),
+        })
+
+    active_situations.sort(key=lambda x: int(x.get("priority", 0)), reverse=True)
+    block_order = reorder_blocks(default_block_order(page), promoted_blocks)
+
+    return {
+        "available": True,
+        "page": page,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "active_situations": active_situations,
+        "ontology_context": {
+            "required_entities": required_entities,
+            "required_features": required_features,
+            "missing_entities": missing_entities,
+            "missing_features": missing_features,
+            "entity_count": len(entities),
+            "feature_count": len(features),
+        },
+        "view_profile": {
+            "block_order": block_order,
+            "highlights": sorted(set(highlights)),
+            "default_filters": default_filters,
+            "layout_mode": "ontology-driven",
+        },
+        "metrics": metrics,
+    }
+def get_view_state(page: str, project: str = "all", category: str = "all", employee: str = "all") -> dict[str, object]:
+    now = time.monotonic()
+    cache_key = f"{page}|{project}|{category}|{employee}"
+    with CACHE_LOCK:
+        cache = CACHE.get("view_state")
+        view_cache = cache if isinstance(cache, dict) else {}
+        cached = view_cache.get(cache_key)
+        if cached is not None and now - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        try:
+            payload = build_view_state(page=page, project=project, category=category, employee=employee)
+            view_cache[cache_key] = (now, payload)
+            CACHE["view_state"] = view_cache
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached is not None:
+                return cached[1]
+            raise
+
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -634,17 +1152,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.log_error("CRM recent activities query failed (%s)", type(exc).__name__)
         elif path == "/api/lead-pulse":
             try:
-                now = time.monotonic()
-                with CACHE_LOCK:
-                    cached = CACHE.get("lead_pulse")
-                    if cached is not None and now - float(CACHE["lead_pulse_at"]) < CACHE_SECONDS:
-                        payload = cached
-                    else:
-                        payload = create_store_client().lead_pulse()
-                        CACHE["lead_pulse_at"] = now
-                        CACHE["lead_pulse"] = payload
+                payload = get_lead_pulse()
                 self._send_json(200, payload)
-            except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
+            except GRAPH_QUERY_EXCEPTIONS as exc:
                 self._send_json(502, {"available": False,
                                       "error": "Не удалось получить пульс лидов"})
                 self.log_error("CRM lead pulse query failed (%s)", type(exc).__name__)
@@ -671,9 +1181,64 @@ class Handler(BaseHTTPRequestHandler):
                 payload = get_lead_employee_pulse(employee)
                 self._send_json(200, payload)
             except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
-                self._send_json(502, {"available": False,
-                                      "error": "Не удалось получить пульс сотрудников"})
+                self._send_json(200, {
+                    "available": False,
+                    "backend": create_store_client().backend,
+                    "as_of": datetime.now(timezone.utc).isoformat(),
+                    "employees": [],
+                    "employee_trend": [],
+                    "error": "Не удалось получить пульс сотрудников",
+                })
                 self.log_error("CRM lead employee pulse query failed (%s)", type(exc).__name__)
+        elif path == "/api/view-state":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                page = params.get("page", ["deals"])[0]
+                project = params.get("project", ["all"])[0]
+                category = params.get("category", ["all"])[0]
+                employee = params.get("employee", ["all"])[0]
+                if page not in {"deals", "leads", "employees"}:
+                    self._send_json(400, {"error": "Неизвестная страница для view-state"})
+                    return
+                categories = get_categories()
+                valid_categories = {item["id"] for item in categories}
+                if project != "all" and project not in valid_categories:
+                    self._send_json(400, {"error": "Неизвестная категория проекта"})
+                    return
+                if category != "all" and category not in valid_categories:
+                    self._send_json(400, {"error": "Неизвестная категория воронки"})
+                    return
+                payload = get_view_state(page=page, project=project, category=category, employee=employee)
+                payload["categories"] = categories
+                self._send_json(200, payload)
+            except GRAPH_QUERY_EXCEPTIONS as exc:
+                fallback_page = "deals"
+                if "page" in locals() and isinstance(page, str) and page in {"deals", "leads", "employees"}:
+                    fallback_page = page
+                self._send_json(200, {
+                    "available": False,
+                    "page": fallback_page,
+                    "as_of": datetime.now(timezone.utc).isoformat(),
+                    "active_situations": [],
+                    "ontology_context": {
+                        "required_entities": [],
+                        "required_features": [],
+                        "missing_entities": [],
+                        "missing_features": [],
+                        "entity_count": 0,
+                        "feature_count": 0,
+                    },
+                    "view_profile": {
+                        "block_order": default_block_order(fallback_page),
+                        "highlights": [],
+                        "default_filters": {},
+                        "layout_mode": "ontology-driven",
+                    },
+                    "metrics": {},
+                    "categories": [],
+                    "error": "Не удалось получить адаптивное состояние вида",
+                })
+                self.log_error("CRM view-state query failed (%s)", type(exc).__name__)
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 

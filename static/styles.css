@@ -108,6 +108,23 @@ tbody tr:hover { background: #fafcfc; }
 .error-banner[hidden], [hidden] { display: none !important; }
 footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 2px; color: #88959c; font-size: 10px; }
 
+.page-blocks { display: grid; gap: 17px; }
+.block { order: var(--block-order, 0); }
+.block[hidden] { display: none !important; }
+.is-promoted { box-shadow: 0 10px 26px #233e5026; border-color: #cfe6e3; }
+.is-highlighted { border-color: #f2d1a2; box-shadow: 0 8px 20px #f0e1cb; }
+.situations-panel { border-left: 3px solid var(--amber); }
+.situations-title { margin: 0 0 6px; font-size: 13px; letter-spacing: -.01em; }
+.situation-item { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; background: #fff7e6; margin-bottom: 9px; }
+.situation-item:last-child { margin-bottom: 0; }
+.situation-name { font-weight: 700; font-size: 12px; }
+.situation-desc { color: var(--muted); font-size: 11px; }
+.situation-priority { font-size: 10px; color: var(--amber); font-weight: 700; }
+
+@media (max-width: 740px) {
+  .page-blocks { gap: 13px; }
+}
+
 @media (max-width: 1080px) {
   .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .metric-card { min-height: 122px; }
