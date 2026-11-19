@@ -104,6 +104,8 @@ def save_text(directory: Path, slug: str, text: str, expected_sha256: str | None
             fd, tmp_name = tempfile.mkstemp(prefix=".ontology-", suffix=".tmp", dir=directory)
             try:
                 with os.fdopen(fd, "wb") as stream:
+                    # mkstemp defaults to 0600; preserve the shared TTL file mode on atomic replacement.
+                    os.fchmod(stream.fileno(), 0o664)
                     stream.write(text.encode("utf-8"))
                     stream.flush()
                     os.fsync(stream.fileno())
@@ -134,10 +136,14 @@ def list_ontologies(directory: Path) -> list[dict[str, object]]:
 def read_ontology(directory: Path, slug: str) -> tuple[str, str]:
     path = ontology_path(directory, slug)
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError as exc:
         raise OntologyError(404, "Файл не найден") from exc
-    return text, digest(path)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OntologyError(422, "Файл должен быть в UTF-8") from exc
+    return text, hashlib.sha256(raw).hexdigest()
 
 
 def graph_store_url(base_url: str, repository: str, uri: str) -> str:

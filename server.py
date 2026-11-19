@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 
 from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies,
                             ontology_uri, parse_ttl, publish, read_ontology, save_text)
+from ontology_assistant import (MAX_ASSISTANT_BODY, AssistantError, assistant_config,
+                                suggest as suggest_ontology, version_for)
 from rdflib import Graph
 
 ROOT = Path(__file__).resolve().parent
@@ -29,6 +31,25 @@ CACHE: dict[str, object] = {"pulse": {}, "categories_at": 0.0,
                            "lead_conversion_trend": {}, "lead_employee_pulse": {},
                            "deal_activity_distribution": {}}
 CACHE_LOCK = threading.Lock()
+
+
+def admin_token_matches(supplied: str, expected: str) -> bool:
+    """Accept legacy ASCII Bearer tokens and UTF-8 tokens carried as base64url."""
+    if not expected:
+        return False
+    scheme, separator, credential = supplied.partition(" ")
+    if not separator:
+        return False
+    if scheme == "Bearer-UTF8":
+        try:
+            encoded = credential.encode("ascii")
+            encoded += b"=" * (-len(encoded) % 4)
+            credential = base64.b64decode(encoded, altchars=b"-_", validate=True).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError, ValueError):
+            return False
+    elif scheme != "Bearer":
+        return False
+    return hmac.compare_digest(credential.encode("utf-8"), expected.encode("utf-8"))
 
 
 def load_env() -> None:
@@ -581,6 +602,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "ontologies.html", "text/html; charset=utf-8")
         elif path == "/ontologies.js":
             self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
+        elif path == "/api/ontology-assistant/config":
+            config = assistant_config()
+            self._send_json(200, {"enabled": config["enabled"], "model": config["model"],
+                                  "allowed_actions": config["allowed_actions"]})
+        elif path == "/api/ontology-assistant/version":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                self._send_json(200, version_for(params.get("slug", [""])[0]))
+            except (OntologyError, ValueError) as exc:
+                status = exc.status if isinstance(exc, OntologyError) else 400
+                self._send_json(status, {"error": str(exc)})
         elif path == "/api/ontologies":
             self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
                                   "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
@@ -718,10 +750,52 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
+        if urlsplit(self.path).path == "/api/ontology-assistant/suggest":
+            self._ontology_assistant_suggest()
+            return
         self._ontology_write("POST")
 
     def do_PUT(self) -> None:  # noqa: N802
         self._ontology_write("PUT")
+
+    def _ontology_assistant_suggest(self) -> None:
+        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        if not token:
+            self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
+            return
+        if not admin_token_matches(self.headers.get("Authorization", ""), token):
+            self._send_json(401, {"error": "Требуется токен администратора"})
+            return
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if not origin or urlsplit(origin).netloc != host:
+            self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_ASSISTANT_BODY:
+                self._send_json(413, {"error": "Размер запроса помощнику превышает 640 KiB"})
+                return
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                self._send_json(400, {"error": "Ожидается JSON-объект"})
+                return
+            result = suggest_ontology(payload, create_store_client())
+            self._send_json(200, result)
+        except AssistantError as exc:
+            self._send_json(exc.status, {"error": exc.message, "code": exc.code})
+            self.log_error("Ontology assistant failed (%s)", exc.code)
+        except OntologyError as exc:
+            self._send_json(exc.status, {"error": str(exc), **exc.details})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+            self._send_json(502, {"error": "Не удалось получить контекст RDF для помощника", "code": type(exc).__name__})
+            self.log_error("Ontology assistant context failed (%s)", type(exc).__name__)
+        except Exception as exc:
+            self._send_json(502, {"error": "Запрос помощнику не выполнен", "code": "assistant_error"})
+            self.log_error("Ontology assistant failed (%s)", type(exc).__name__)
+
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
@@ -729,11 +803,10 @@ class Handler(BaseHTTPRequestHandler):
     def _ontology_write(self, method: str) -> None:
         path = urlsplit(self.path).path
         token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
-        supplied = self.headers.get("Authorization", "")
         if not token:
             self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
             return
-        if not supplied.startswith("Bearer ") or not hmac.compare_digest(supplied[7:], token):
+        if not admin_token_matches(self.headers.get("Authorization", ""), token):
             self._send_json(401, {"error": "Требуется токен администратора"})
             return
         origin = self.headers.get("Origin")

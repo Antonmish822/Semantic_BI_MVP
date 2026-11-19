@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from ontology_admin import (OntologyError, graph_store_url, ontology_path, parse_ttl,
                             publish, save_text)
+from server import admin_token_matches
 
 TTL = '''@prefix owl: <http://www.w3.org/2002/07/owl#> .
 <urn:bitrix24:ontology:sample> a owl:Ontology .
@@ -26,6 +27,15 @@ class Store:
 
 
 class OntologyAdminChecks(unittest.TestCase):
+    def test_admin_token_header_supports_utf8_without_raw_unicode_header_bytes(self):
+        token = "секрет-admin-token"
+        import base64
+        encoded = base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii").rstrip("=")
+        self.assertTrue(admin_token_matches(f"Bearer-UTF8 {encoded}", token))
+        self.assertFalse(admin_token_matches(f"Bearer-UTF8 {encoded}", "другой токен"))
+        self.assertTrue(admin_token_matches("Bearer legacy-ascii-token", "legacy-ascii-token"))
+        self.assertFalse(admin_token_matches("Bearer-UTF8 %%%", token))
+
     def test_turtle_syntax_and_expected_ontology_uri(self):
         self.assertEqual(len(parse_ttl(TTL, "sample")), 2)
         for text, slug in [("not Turtle", "sample"), (TTL.replace("sample>", "other>"), "sample")]:
@@ -61,6 +71,7 @@ class OntologyAdminChecks(unittest.TestCase):
             self.assertEqual(calls[0][0], root)
             self.assertEqual(calls[0][1], path)
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), new_hash)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o664)
 
     def test_graph_store_url_encodes_repository_and_derived_iri(self):
         self.assertEqual(graph_store_url("http://graphdb:7200/", "my repo", "urn:bitrix24:ontology:sample"),

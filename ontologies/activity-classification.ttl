@@ -7,7 +7,7 @@
     a owl:Ontology ;
     rdfs:label "Bitrix24 activity classification"@en ;
     rdfs:label "Классификация активностей Bitrix24"@ru ;
-    rdfs:comment "Выводит b24:Activity по наличию b24:typeId или b24:provider. Оба свойства являются признаками активности в RDF-проекции."@ru .
+    rdfs:comment "Выводит b24:Activity по наличию b24:typeId или b24:provider. Оба свойства являются признаками активности в RDF-проекции. Часть общей онтлогии"@ru .
 
 b24:Activity a owl:Class ;
     rdfs:label "Activity"@en ;

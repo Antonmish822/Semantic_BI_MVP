@@ -136,3 +136,36 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 #editor { box-sizing: border-box; width: 100%; min-height: 440px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfc; color: var(--ink); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 #new-slug, #admin-token, #file-input { box-sizing: border-box; width: 100%; margin: 6px 0 12px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
 #current-meta { margin-bottom: 10px; text-align: left; }
+
+.ontology-admin-layout { display:grid; grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr); align-items:start; gap:18px; }
+.ontology-workspace { display:grid; grid-template-columns:minmax(210px, .7fr) minmax(0, 2.3fr); gap:20px; }
+.ontology-sidebar, .assistant-quick-tasks { display:grid; align-content:start; gap:10px; }
+.ontology-sidebar h3, .assistant-quick-tasks h3 { margin:0 0 4px; }
+.ontology-sidebar label, .assistant-composer { display:grid; gap:7px; }
+.ontology-sidebar input { box-sizing:border-box; width:100%; margin:5px 0; padding:8px; border:1px solid var(--line); border-radius:8px; }
+.ontology-list { display:grid; gap:7px; }
+.ontology-list .secondary-button { width:100%; justify-content:flex-start; }
+#editor { box-sizing:border-box; width:100%; min-height:440px; padding:14px; border:1px solid var(--line); border-radius:10px; background:#fbfcfc; color:var(--ink); font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical; }
+.ontology-actions { margin-top:12px; flex-wrap:wrap; }
+.assistant-heading { align-items:flex-start; }
+.assistant-state { padding:6px 10px; border-radius:999px; background:#edf5f4; color:var(--teal); font-size:12px; font-weight:700; }
+.assistant-layout { display:grid; grid-template-columns:minmax(0,2.2fr) minmax(190px,.8fr); gap:18px; }
+.assistant-conversation { min-width:0; }
+.assistant-history { max-height:650px; overflow:auto; display:grid; gap:12px; padding:8px 0 16px; }
+.assistant-history-line { margin:0; padding:9px 12px; background:#f4f7f7; border-radius:8px; color:var(--muted); font-size:12px; white-space:pre-wrap; }
+.assistant-composer { padding:14px; border:1px solid var(--line); border-radius:10px; }
+.assistant-composer textarea { box-sizing:border-box; width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; color:var(--ink); font:inherit; font-size:13px; line-height:1.5; resize:vertical; }
+.assistant-composer-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:11px; }
+.assistant-quick-tasks .secondary-button { width:100%; white-space:normal; text-align:left; }
+.assistant-result { padding:16px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.assistant-result h3 { margin:0 0 8px; }
+.assistant-result h4 { margin:16px 0 5px; }
+.assistant-result p, .assistant-result li { font-size:13px; line-height:1.5; }
+.assistant-provenance { color:var(--muted); font-size:11px!important; overflow-wrap:anywhere; }
+.assistant-diff { max-height:380px; overflow:auto; padding:12px; background:#f4f7f7; border-radius:8px; font-size:11px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.assistant-result details { margin-top:14px; }
+.assistant-result-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+.assistant-error { padding:10px; border-radius:8px; background:#fff0ed; color:#9c3425; }
+@media (max-width:1250px) { .ontology-admin-layout { grid-template-columns:1fr; } }
+@media (max-width:850px) { .ontology-workspace, .assistant-layout { grid-template-columns:1fr; } .assistant-quick-tasks { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:560px) { .assistant-quick-tasks { grid-template-columns:1fr; } .assistant-composer-actions { align-items:flex-start; flex-direction:column; } }
