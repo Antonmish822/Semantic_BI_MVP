@@ -86,10 +86,25 @@ Compose запускает контейнер с read-only корневой фа
 docker compose down
 ```
 
+## AI Agent (Ollama + MCP)
+
+Минимальный HTTP API доступен по `POST /api/agent` и использует локальную Ollama для генерации ответа и MCP-инструменты для выборок из RDF. История сообщений хранится в памяти процесса по `session_id`.
+
+Переменные окружения:
+
+- `OLLAMA_URL` — базовый URL Ollama (по умолчанию `http://127.0.0.1:11434`);
+- `OLLAMA_MODEL` — модель Ollama (по умолчанию `llama3.1`);
+- `OLLAMA_TIMEOUT` — таймаут запросов Ollama в секундах (по умолчанию `60`);
+- `MCP_TIMEOUT` — таймаут запросов MCP в секундах (по умолчанию `30`);
+- `AGENT_MAX_HISTORY` — максимальное число сообщений в истории (по умолчанию `12`);
+- `AGENT_SYSTEM_PROMPT` — системный промпт агента (опционально).
+
+Интерфейс чата доступен по адресу `/agent`.
+
 ## Структура
 
-- `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей;
+- `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей, плюс endpoint `/api/agent`;
 - `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
-- `static/index.html`, `static/leads.html`, `static/employees.html` — три страницы интерфейса;
+- `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html` — страницы интерфейса;
 - `static/*.js` и `static/styles.css` — клиентская логика и стили;
 - `docs/` — справочные материалы о доступных RDF-признаках и онтологии.

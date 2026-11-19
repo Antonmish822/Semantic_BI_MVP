@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -165,6 +166,8 @@ DEFAULT_RULES: dict[str, object] = {
 }
 CACHE_LOCK = threading.RLock()
 GRAPH_QUERY_EXCEPTIONS = (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError, json.JSONDecodeError)
+AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
+AGENT_SESSIONS_LOCK = threading.RLock()
 
 
 def cache_fallback_enabled() -> bool:
@@ -184,6 +187,128 @@ def load_env() -> None:
         if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
             value = value[1:-1]
         os.environ.setdefault(key, value)
+
+
+def _read_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 512 * 1024) -> dict[str, object]:
+    length = int(handler.headers.get("Content-Length", "0"))
+    if length <= 0 or length > max_bytes:
+        raise ValueError("Недопустимый размер запроса")
+    raw = handler.rfile.read(length)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Некорректный JSON") from exc
+
+
+def _normalize_ollama_url(url: str) -> str:
+    if url.rstrip("/").endswith("/api/chat"):
+        return url
+    return url.rstrip("/") + "/api/chat"
+
+
+def _ollama_chat(messages: list[dict[str, str]]) -> dict[str, object]:
+    base_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+    url = _normalize_ollama_url(base_url)
+    payload = {
+        "model": os.environ.get("OLLAMA_MODEL", "llama3.1"),
+        "messages": messages,
+        "stream": False,
+    }
+    timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+    request = Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _mcp_request(payload: dict[str, object]) -> dict[str, object]:
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    port = int(os.environ.get("MCP_PORT", "8090"))
+    url = f"http://{host}:{port}/mcp"
+    timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
+    request = Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _mcp_tools_list() -> list[dict[str, object]]:
+    response = _mcp_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    result = response.get("result") if isinstance(response, dict) else None
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list):
+        raise ValueError("Некорректный ответ MCP")
+    return tools
+
+
+def _mcp_tool_call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+    response = _mcp_request({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    })
+    if "error" in response:
+        raise ValueError(response["error"].get("message", "Ошибка MCP"))
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise ValueError("Некорректный ответ MCP")
+    return result
+
+
+def _agent_system_prompt(tools: list[dict[str, object]]) -> str:
+    base_prompt = os.environ.get(
+        "AGENT_SYSTEM_PROMPT",
+        "Ты — аналитический ассистент Semantic BI. "
+        "Отвечай по-русски. Если нужны данные, вызывай MCP-инструменты. "
+        "Чтобы вызвать инструмент, ответь ТОЛЬКО JSON без пояснений: "
+        "{\"tool_call\":{\"name\":\"<tool>\",\"arguments\":{...}}}. "
+        "Если инструмент не нужен, отвечай обычным текстом.",
+    )
+    tools_hint = "\nДоступные инструменты:\n" + "\n".join(
+        f"- {tool.get('name')}: {tool.get('description', '')}" for tool in tools
+    )
+    return base_prompt + tools_hint
+
+
+def _extract_tool_call(content: str) -> dict[str, object] | None:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tool_call = payload.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return None
+    if not isinstance(tool_call.get("name"), str):
+        return None
+    arguments = tool_call.get("arguments")
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return None
+    return {"name": tool_call["name"], "arguments": arguments}
+
+
+def _sanitize_history(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    clean: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str):
+            clean.append({"role": role, "content": content})
+    return clean
 
 
 def sparql_literal(value: str) -> str:
@@ -1085,12 +1210,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "leads.html", "text/html; charset=utf-8")
         elif path in {"/employees", "/employees.html"}:
             self._send_file(STATIC / "employees.html", "text/html; charset=utf-8")
+        elif path in {"/agent", "/agent.html"}:
+            self._send_file(STATIC / "agent.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
         elif path == "/leads.js":
             self._send_file(STATIC / "leads.js", "text/javascript; charset=utf-8")
         elif path == "/employees.js":
             self._send_file(STATIC / "employees.js", "text/javascript; charset=utf-8")
+        elif path == "/agent.js":
+            self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
         elif path == "/api/pulse":
@@ -1243,7 +1372,69 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+        path = urlsplit(self.path).path
+        if path != "/api/agent":
+            self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+            return
+        try:
+            payload = _read_json_body(self)
+            message = str(payload.get("message") or "").strip()
+            if not message:
+                self._send_json(400, {"error": "Поле message обязательно"})
+                return
+            history = _sanitize_history(payload.get("history"))
+            session_id = payload.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                session_id = str(uuid.uuid4())
+            with AGENT_SESSIONS_LOCK:
+                stored = AGENT_SESSIONS.get(session_id, [])
+            if stored:
+                history = stored
+            max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
+            history = history[-max_history:]
+
+            tools = _mcp_tools_list()
+            system_prompt = _agent_system_prompt(tools)
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(history)
+            messages.append({"role": "user", "content": message})
+
+            first = _ollama_chat(messages)
+            content = first.get("message", {}).get("content", "")
+            if not isinstance(content, str):
+                content = ""
+
+            tool_call = _extract_tool_call(content)
+            if tool_call:
+                tool_result = _mcp_tool_call(tool_call["name"], tool_call["arguments"])
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": "Результат вызова инструмента:\n" + json.dumps(
+                        tool_result, ensure_ascii=False
+                    ),
+                })
+                final = _ollama_chat(messages)
+                content = final.get("message", {}).get("content", "")
+                if not isinstance(content, str):
+                    content = ""
+
+            new_history = history + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": content},
+            ]
+            new_history = new_history[-max_history:]
+            with AGENT_SESSIONS_LOCK:
+                AGENT_SESSIONS[session_id] = new_history
+            self._send_json(200, {"session_id": session_id, "reply": content, "history": new_history})
+        except (HTTPError, URLError, TimeoutError) as exc:
+            self._send_json(502, {"error": "Не удалось связаться с агентом или MCP"})
+            self.log_error("Agent backend error (%s)", type(exc).__name__)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"error": "Внутренняя ошибка агента"})
+            self.log_error("Agent error (%s)", type(exc).__name__)
 
     def do_PUT(self) -> None:  # noqa: N802
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
