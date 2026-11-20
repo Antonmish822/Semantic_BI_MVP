@@ -632,6 +632,9 @@ async def agent(request: FastAPIRequest) -> JSONResponse:
     try:
         raw = await request.body()
         request_bytes = len(raw)
+        if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+            print(f"Agent request bytes: {request_bytes}")
+            print(f"Agent request raw: {raw[:200]!r}")
         payload = _read_json_body(raw)
         message = str(payload.get("message") or "").strip()
         if not message:
@@ -834,6 +837,12 @@ async def agent(request: FastAPIRequest) -> JSONResponse:
         error_class = profile_error(exc)
         http_status = 400
         response_payload = {"error": str(exc)}
+        if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+            print(f"Agent value error: {exc!r}")
+            if last_tool:
+                print(f"Agent last tool: {last_tool}")
+            if last_tool_result is not None:
+                print(f"Agent last tool result: {last_tool_result}")
         set_agent_progress(request_id, "error", "Не удалось обработать запрос")
         return _json_response(response_payload, http_status, request_id)
     except (BrokenPipeError, ConnectionResetError) as exc:

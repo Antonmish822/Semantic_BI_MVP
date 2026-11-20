@@ -1212,6 +1212,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
+        elif path.startswith("/vendor/"):
+            file_path = (STATIC / path.lstrip("/"))
+            try:
+                resolved = file_path.resolve()
+                if not str(resolved).startswith(str(STATIC.resolve())):
+                    raise FileNotFoundError
+                if not resolved.is_file():
+                    raise FileNotFoundError
+                content_type = "application/javascript" if resolved.suffix == ".js" else "application/octet-stream"
+                self._send_file(resolved, f"{content_type}; charset=utf-8")
+            except FileNotFoundError:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
         elif path == "/api/pulse":
             try:
                 params = parse_qs(urlsplit(self.path).query)
@@ -1416,10 +1429,24 @@ class Handler(BaseHTTPRequestHandler):
         if request_id:
             headers["X-Request-ID"] = request_id
         timeout = float(os.environ.get("AGENT_TIMEOUT", "60"))
+        if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+            self.log_message(
+                "Agent proxy request: method=%s path=%s content_type=%s content_length=%s",
+                method,
+                path,
+                content_type,
+                len(body or b""),
+            )
         try:
             request = Request(url, data=body, headers=headers, method=method)
             with urlopen(request, timeout=timeout) as response:
                 payload = response.read()
+                if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+                    self.log_message(
+                        "Agent proxy response: status=%s content_length=%s",
+                        response.status,
+                        len(payload),
+                    )
                 self._send(
                     response.status,
                     payload,
@@ -1428,6 +1455,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
         except HTTPError as exc:
             payload = exc.read()
+            if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+                self.log_message(
+                    "Agent proxy error: status=%s content_length=%s",
+                    exc.code,
+                    len(payload),
+                )
             self._send(
                 exc.code,
                 payload,
