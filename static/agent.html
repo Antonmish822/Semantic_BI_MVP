@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI Agent — Semantic BI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">P</div>
+        <div>
+          <p class="eyebrow">SEMANTIC BI · BITRIX24</p>
+          <h1>AI Agent</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="agent-status" class="connection pending"><i></i><span>Ожидание…</span></span>
+        <button id="chat-reset" class="secondary-button" type="button" aria-label="Сбросить чат">
+          Сбросить чат
+        </button>
+      </div>
+    </header>
+
+    <nav class="page-nav" aria-label="Страницы дашборда">
+      <a href="/">Пульс сделок</a>
+      <a href="/leads">Пульс лидов</a>
+      <a href="/employees">Сотрудники</a>
+      <a class="active" href="/agent">AI Agent</a>
+    </nav>
+
+    <div id="chat-error" class="error-banner" hidden></div>
+
+    <section id="agent-progress" class="agent-progress" aria-label="Ход обработки запроса" hidden>
+      <div class="agent-progress-copy">
+        <span class="agent-progress-label">Текущий этап</span>
+        <span id="agent-progress-stage" role="status" aria-live="polite">Подготавливаю запрос</span>
+      </div>
+      <div class="agent-progress-track" role="progressbar" aria-label="Запрос обрабатывается">
+        <span class="agent-progress-indicator"></span>
+      </div>
+    </section>
+
+    <section class="panel agent-panel" aria-labelledby="agent-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">ЧАТ С СЕМАНТИЧЕСКИМ BI</p>
+          <h2 id="agent-title">Спросите о сделках, лидах и сотрудниках</h2>
+          <p class="panel-subtitle">Агент использует MCP-инструменты для выборок из RDF-хранилища.</p>
+        </div>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite"></div>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <textarea id="chat-input" class="chat-input" rows="3" placeholder="Например: Покажи топ-5 категорий по активным сделкам" required></textarea>
+        <div class="chat-actions">
+          <span id="chat-hint" class="panel-subtitle">Enter — отправить, Shift+Enter — новая строка.</span>
+          <button id="chat-send" class="refresh" type="submit">Отправить</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <script src="/vendor/xlsx.full.min.js" defer></script>
+  <script src="/agent.js" defer></script>
+</body>
+</html>

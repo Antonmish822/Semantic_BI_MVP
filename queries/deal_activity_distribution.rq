@@ -1,0 +1,12 @@
+PREFIX b24: <https://example.org/bitrix24#>
+
+SELECT ?deal ?last_activity_raw ?category_code
+WHERE {
+  GRAPH ?deal_graph {
+    ?deal b24:stageSemantic "P" ;
+          b24:categoryCode ?category_code .
+    OPTIONAL { ?deal b24:lastActivityTime ?last_activity_raw }
+  }
+  FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
+         && CONTAINS(STR(?deal_graph), ":deal:"))
+}

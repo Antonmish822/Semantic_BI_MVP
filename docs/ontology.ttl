@@ -1,0 +1,290 @@
+@prefix : <https://example.org> .
+@prefix owl: <http://w3.org> .
+@prefix rdf: <http://w3.org> .
+@prefix rdfs: <http://w3.org> .
+@prefix xsd: <http://w3.org> .
+
+<https://example.org> a owl:Ontology ;
+    rdfs:label "Bitrix24 CRM Ontology"@en ;
+    rdfs:comment "Онтология сущностей Bitrix24 CRM для профиля OWL 2 RL с ключами дедупликации."@ru .
+
+#################################################################
+#    Классы (Classes) и ключи (owl:hasKey)
+#################################################################
+
+:Activity a owl:Class ;
+    rdfs:label "Activity"@en, "Дело (активность)"@ru .
+
+:Category a owl:Class ;
+    rdfs:label "Category"@en, "Воронка (направление)"@ru ;
+    owl:hasKey ( :name ) .
+
+:Deal a owl:Class ;
+    rdfs:label "Deal"@en, "Сделка"@ru .
+
+:Lead a owl:Class ;
+    rdfs:label "Lead"@en, "Лид"@ru ;
+    # Связывание лидов, пришедших из одной внешней системы (интеграции)
+    owl:hasKey ( :originatorId :originId ) .
+
+:Source a owl:Class ;
+    rdfs:label "Source"@en, "Источник"@ru ;
+    owl:hasKey ( :code ) .
+
+:Stage a owl:Class ;
+    rdfs:label "Stage"@en, "Стадия"@ru ;
+    # В Bitrix24 код стадии уникален в рамках конкретной воронки (categoryCode)
+    owl:hasKey ( :code :categoryCode ) .
+
+:User a owl:Class ;
+    rdfs:label "User"@en, "Пользователь"@ru .
+
+
+#################################################################
+#    Объектные свойства (Object Properties — связи между узлами)
+#################################################################
+
+:assignedTo a owl:ObjectProperty ;
+    rdfs:label "assignedTo"@en ;
+    rdfs:range :User .
+
+:bindingDeal a owl:ObjectProperty ;
+    rdfs:label "bindingDeal"@en ;
+    rdfs:domain :Activity ;
+    rdfs:range :Deal .
+
+:bindingLead a owl:ObjectProperty ;
+    rdfs:label "bindingLead"@en ;
+    rdfs:domain :Activity ;
+    rdfs:range :Lead .
+
+:company a owl:ObjectProperty ;
+    rdfs:label "company"@en ;
+    rdfs:domain :Deal .
+
+:contact a owl:ObjectProperty ;
+    rdfs:label "contact"@en ;
+    rdfs:domain :Deal .
+
+:lastActivityBy a owl:ObjectProperty ;
+    rdfs:label "lastActivityBy"@en ;
+    rdfs:domain :Deal ;
+    rdfs:range :User .
+
+:originLead a owl:ObjectProperty ;
+    rdfs:label "originLead"@en ;
+    rdfs:domain :Deal ;
+    rdfs:range :Lead .
+
+:owner a owl:ObjectProperty ;
+    rdfs:label "owner"@en ;
+    rdfs:domain :Activity .
+
+:responsible a owl:ObjectProperty ;
+    rdfs:label "responsible"@en ;
+    rdfs:domain :Activity ;
+    rdfs:range :User .
+
+
+#################################################################
+#    Свойства данных (Datatype Properties — литералы)
+#################################################################
+
+# --- Общие и системные свойства ---
+:createdAt a owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+:modifiedAt a owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+:name a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:title a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:sort a owl:DatatypeProperty ;
+    rdfs:range xsd:integer .
+
+:description a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:code a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:categoryCode a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:sourceCode a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:system a owl:DatatypeProperty ;
+    rdfs:range xsd:boolean .
+
+:color a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:nameInitial a owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+# --- Свойства Activity ---
+:subject a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:string .
+
+:typeId a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:integer .
+
+:provider a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:string .
+
+:providerTypeId a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:string .
+
+:startAt a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:dateTime .
+
+:endAt a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:dateTime .
+
+:deadline a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:dateTime .
+
+:completed a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:boolean .
+
+:direction a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:integer .
+
+:ownerTypeId a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:integer .
+
+:priority a owl:DatatypeProperty ;
+    rdfs:domain :Activity ;
+    rdfs:range xsd:integer .
+
+# --- Свойства Category ---
+:locked a owl:DatatypeProperty ;
+    rdfs:domain :Category ;
+    rdfs:range xsd:boolean .
+
+:isDefault a owl:DatatypeProperty ;
+    rdfs:domain :Category ;
+    rdfs:range xsd:boolean .
+
+# --- Свойства Deal ---
+:stageCode a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:string .
+
+:stageSemantic a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:string .
+
+:beginDate a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:dateTime .
+
+:closeDate a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:dateTime .
+
+:opportunity a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:decimal .
+
+:currency a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:string .
+
+:isManualOpportunity a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:boolean .
+
+:lastActivityTime a owl:DatatypeProperty ;
+    rdfs:domain :Deal ;
+    rdfs:range xsd:dateTime .
+
+# --- Свойства Lead ---
+:movedAt a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:dateTime .
+
+:statusCode a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:statusSemantic a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:sourceDescription a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:utmSource a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:utmMedium a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:utmCampaign a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:utmContent a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:utmTerm a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:originatorId a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:originId a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:string .
+
+:closedAt a owl:DatatypeProperty ;
+    rdfs:domain :Lead ;
+    rdfs:range xsd:dateTime .
+
+# --- Свойства Stage ---
+:semantics a owl:DatatypeProperty ;
+    rdfs:domain :Stage ;
+    rdfs:range xsd:string .
+
+# --- Свойства User ---
+:active a owl:DatatypeProperty ;
+    rdfs:domain :User ;
+    rdfs:range xsd:boolean .
+
+:firstName a owl:DatatypeProperty ;
+    rdfs:domain :User ;
+    rdfs:range xsd:string .
+
+:lastName a owl:DatatypeProperty ;
+    rdfs:domain :User ;
+    rdfs:range xsd:string .
+
+:fullName a owl:DatatypeProperty ;
+    rdfs:domain :User ;
+    rdfs:range xsd:string .
+
+:department a owl:DatatypeProperty ;
+    rdfs:domain :User ;
+    rdfs:range xsd:string .

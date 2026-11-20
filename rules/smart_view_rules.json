@@ -1,0 +1,130 @@
+{
+  "pages": {
+    "deals": {
+      "required_entities": ["Deal", "Activity", "Category", "User"],
+      "required_features": [
+        "deal.stageSemantic",
+        "deal.lastActivityTime",
+        "deal.assignedTo",
+        "activity.ownerTypeId",
+        "activity.createdAt"
+      ],
+      "situations": [
+        {
+          "id": "red_deals_spike",
+          "title": "Всплеск красных сделок",
+          "description": "Доля красных сделок превышает порог за последнюю неделю.",
+          "priority": 100,
+          "when": {
+            "metric": "red_deals_ratio",
+            "operator": ">=",
+            "threshold": 0.18
+          },
+          "effect": {
+            "promote_blocks": ["red_deals", "deal_activity_distribution"],
+            "highlights": ["red_deals"],
+            "default_filters": {
+              "project": "nonempty"
+            }
+          }
+        },
+        {
+          "id": "activity_stagnation",
+          "title": "Застой по активности",
+          "description": "Растёт доля сделок без активности более 30 дней.",
+          "priority": 70,
+          "when": {
+            "metric": "stagnated_deals_ratio",
+            "operator": ">=",
+            "threshold": 0.25
+          },
+          "effect": {
+            "promote_blocks": ["deal_activity_distribution", "recent_activities"],
+            "highlights": ["deal_activity_distribution"]
+          }
+        }
+      ]
+    },
+    "leads": {
+      "required_entities": ["Lead", "Deal", "Activity", "User", "Source"],
+      "required_features": [
+        "lead.createdAt",
+        "activity.createdAt",
+        "deal.originLead",
+        "lead.assignedTo"
+      ],
+      "situations": [
+        {
+          "id": "slow_response",
+          "title": "Рост времени реакции",
+          "description": "Среднее время до первой активности по лидам растёт.",
+          "priority": 90,
+          "when": {
+            "all": [
+              {
+                "metric": "avg_response_minutes",
+                "operator": ">=",
+                "threshold": 180
+              },
+              {
+                "metric": "response_trend_growth_ratio",
+                "operator": ">=",
+                "threshold": 0.15
+              }
+            ]
+          },
+          "effect": {
+            "promote_blocks": ["response_trend", "red_leads"],
+            "highlights": ["response_trend"],
+            "default_filters": {
+              "employee": "all"
+            }
+          }
+        },
+        {
+          "id": "conversion_drop",
+          "title": "Провал конверсии",
+          "description": "Среднее время конверсии растёт быстрее нормы.",
+          "priority": 80,
+          "when": {
+            "metric": "conversion_trend_growth_ratio",
+            "operator": ">=",
+            "threshold": 0.2
+          },
+          "effect": {
+            "promote_blocks": ["conversion_trend", "red_leads"],
+            "highlights": ["conversion_trend"]
+          }
+        }
+      ]
+    },
+    "employees": {
+      "required_entities": ["User", "Deal", "Activity", "Lead"],
+      "required_features": [
+        "deal.assignedTo",
+        "activity.responsible",
+        "lead.assignedTo"
+      ],
+      "situations": [
+        {
+          "id": "portfolio_growth",
+          "title": "Нагрузка на сотрудников",
+          "description": "Средний портфель сделок у топ-20 сотрудников растёт.",
+          "priority": 60,
+          "when": {
+            "metric": "top20_avg_active_deals",
+            "operator": ">=",
+            "threshold": 18
+          },
+          "effect": {
+            "promote_blocks": ["employees_table"],
+            "highlights": ["employees_table"],
+            "default_filters": {
+              "project": "nonempty"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

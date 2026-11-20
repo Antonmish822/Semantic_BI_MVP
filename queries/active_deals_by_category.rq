@@ -1,0 +1,13 @@
+PREFIX b24: <https://example.org/bitrix24#>
+
+SELECT ?category_code (COUNT(DISTINCT ?deal) AS ?active_deals)
+WHERE {
+  GRAPH ?deal_graph {
+    ?deal b24:stageSemantic "P" ;
+          b24:categoryCode ?category_code .
+  }
+  FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
+         && CONTAINS(STR(?deal_graph), ":deal:"))
+}
+GROUP BY ?category_code
+ORDER BY DESC(?active_deals)
