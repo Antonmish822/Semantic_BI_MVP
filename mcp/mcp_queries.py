@@ -101,6 +101,11 @@ NAMED_QUERIES: dict[str, NamedQuery] = {
         template_file="recent_lead_activities.rq",
         description="Последние активности по лидам.",
     ),
+    "leads_by_category": NamedQuery(
+        name="leads_by_category",
+        template_file="leads_by_category.rq",
+        description="Количество лидов по воронкам (categoryCode связанной сделки).",
+    ),
     "lead_conversion_trend": NamedQuery(
         name="lead_conversion_trend",
         template_file="lead_conversion_trend.rq",
