@@ -466,7 +466,22 @@ def _named_query_argument_error(arguments: dict[str, object], catalog: set[str])
     return None
 
 
+def _looks_like_tool_call(content: str) -> bool:
+    cleaned = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
+    return bool(re.search(
+        r"(\"tool_call\"|\"tool\"\s*:|\b(run_named_query|list_queries|explain_schema|sparql_select)\b)",
+        cleaned,
+    ))
+
+
 def _extract_tool_call(content: str) -> dict[str, object] | None:
+    calls = _extract_tool_calls(content)
+    return calls[0] if calls else None
+
+
+def _extract_tool_calls(content: str) -> list[dict[str, object]]:
+    content = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
+
     def normalize_call(payload: object) -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
@@ -475,6 +490,16 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             wrapped = payload.get("tool")
         if isinstance(wrapped, dict):
             payload = wrapped
+
+        tool_calls = payload.get("tool_calls")
+        if isinstance(tool_calls, list):
+            items: list[dict[str, object]] = []
+            for item in tool_calls:
+                normalized = normalize_call(item)
+                if normalized:
+                    items.append(normalized)
+            if items:
+                return {"__batch__": items}
 
         name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
         if not isinstance(name, str):
@@ -536,43 +561,56 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
                     start = None
         return objects
 
-    tool_call_tag = re.search(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
-    if tool_call_tag:
-        raw_args = tool_call_tag.group(1).strip()
-        if raw_args:
-            try:
-                candidate = json.loads(raw_args)
-            except json.JSONDecodeError:
-                candidate = None
-            call = normalize_call(candidate)
-            if call:
-                return call
+    def append_call(result: dict[str, object] | None, calls: list[dict[str, object]]) -> None:
+        if not result:
+            return
+        if "__batch__" in result:
+            calls.extend(result["__batch__"])
+        else:
+            calls.append(result)
+
+    calls: list[dict[str, object]] = []
+    for match in re.finditer(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL):
+        raw_args = match.group(1).strip()
+        if not raw_args:
+            continue
+        try:
+            candidate = json.loads(raw_args)
+        except json.JSONDecodeError:
+            candidate = None
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     try:
         payload = json.loads(content)
     except json.JSONDecodeError:
         payload = None
-    call = normalize_call(payload)
-    if call:
-        return call
+    if isinstance(payload, list):
+        for item in payload:
+            append_call(normalize_call(item), calls)
+    else:
+        append_call(normalize_call(payload), calls)
+    if calls:
+        return calls
 
     for candidate_raw in iter_json_objects(content):
         try:
             candidate = json.loads(candidate_raw)
         except json.JSONDecodeError:
             continue
-        call = normalize_call(candidate)
-        if call:
-            return call
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
         try:
             candidate = json.loads(match.group(0))
         except json.JSONDecodeError:
             continue
-        call = normalize_call(candidate)
-        if call:
-            return call
+        append_call(normalize_call(candidate), calls)
+    if calls:
+        return calls
 
     invoke_match = re.search(r"<invoke\s+name=\"([\w_\-]+)\">(.*?)</invoke>", content, re.DOTALL)
     if not invoke_match:
@@ -589,21 +627,21 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
                 arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return normalize_call({"name": name, "arguments": arguments})
+        return [{"name": name, "arguments": arguments}]
 
     tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
     if tool_tag:
         name = tool_tag.group(1)
         raw_args = tool_tag.group(2).strip()
         if not raw_args:
-            return {"name": name, "arguments": {}}
+            return [{"name": name, "arguments": {}}]
         try:
             arguments = json.loads(raw_args)
         except json.JSONDecodeError:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return normalize_call({"name": name, "arguments": arguments})
+        return [{"name": name, "arguments": arguments}]
 
     for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
         tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
@@ -613,20 +651,20 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             continue
         raw_args = tag_match.group(1).strip()
         if not raw_args:
-            return {"name": tag, "arguments": {}}
+            return [{"name": tag, "arguments": {}}]
         try:
             arguments = json.loads(raw_args)
         except json.JSONDecodeError:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return normalize_call({"name": tag, "arguments": arguments})
+        return [{"name": tag, "arguments": arguments}]
 
     to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
     if to_match:
-        return {"name": to_match.group(1), "arguments": {}}
+        return [{"name": to_match.group(1), "arguments": {}}]
 
-    return None
+    return []
 
 
 def _sanitize_history(raw: object) -> list[dict[str, str]]:
@@ -1800,7 +1838,7 @@ class Handler(BaseHTTPRequestHandler):
             messages.append({"role": "user", "content": message})
             context_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
 
-            def request_tool_call() -> tuple[str, dict[str, object] | None, str, str | None]:
+            def request_tool_calls() -> tuple[str, list[dict[str, object]], str, str | None]:
                 nonlocal model_calls
                 model_calls += 1
                 set_agent_progress(request_id, "model", "Анализирую запрос и подбираю данные")
@@ -1809,7 +1847,7 @@ class Handler(BaseHTTPRequestHandler):
                     model_message = response.get("choices", [{}])[0].get("message", {})
                     raw = model_message.get("content", "")
                     content_local = raw if isinstance(raw, str) else ""
-                    call = _extract_tool_call(content_local)
+                    calls = _extract_tool_calls(content_local)
                 except Exception as exc:
                     profile_event(
                         "agent_model_result", request_id=request_id, step=model_calls,
@@ -1818,35 +1856,32 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 argument_error = None
                 result_kind = "final_text" if content_local else "empty"
-                if call:
-                    result_kind = "tool_call"
-                    if call.get("name") not in allowed_tools:
-                        result_kind = "disallowed_tool_call"
-                        call = None
-                    elif call["name"] == "run_named_query":
-                        argument_error = _named_query_argument_error(call["arguments"], template_names)
-                        if argument_error:
-                            result_kind = "invalid_tool_arguments"
-                            call = None
+                if calls:
+                    result_kind = "tool_call" if len(calls) == 1 else "tool_calls"
+                    for call in calls:
+                        if call.get("name") not in allowed_tools:
+                            result_kind = "disallowed_tool_call"
+                            break
+                        if call["name"] == "run_named_query":
+                            argument_error = _named_query_argument_error(call["arguments"], template_names)
+                            if argument_error:
+                                result_kind = "invalid_tool_arguments"
+                                break
                 elif model_message.get("tool_calls") or model_message.get("function_call"):
                     result_kind = "native_tool_call"
-                elif re.match(r'^\s*(?:```(?:json)?\s*)?(?:\{\s*"tool_call"\s*:|<tool_call\b|<invoke\b)', content_local):
+                elif _looks_like_tool_call(content_local):
                     result_kind = "malformed_tool_call"
                 needs_repair = result_kind in {
                     "invalid_tool_arguments", "malformed_tool_call", "native_tool_call",
                     "disallowed_tool_call",
                 }
-                retry = model_calls < max_steps and not repair_attempted and (
-                    needs_repair or (not call and tool_steps == 0)
-                )
-                action = None
-                if needs_repair:
-                    action = "repair" if retry else "reject"
+                retry = model_calls < max_steps and not repair_attempted and needs_repair
+                action = ("repair" if retry else "reject") if needs_repair else None
                 profile_event(
                     "agent_model_result", request_id=request_id, step=model_calls,
                     result_kind=result_kind, argument_error=argument_error, retry=retry,
                 )
-                return content_local, call, result_kind, action
+                return content_local, calls, result_kind, action
 
             max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
             tool_steps = 0
@@ -1855,7 +1890,7 @@ class Handler(BaseHTTPRequestHandler):
             last_tool: dict[str, object] | None = None
             last_tool_result: dict[str, object] | None = None
             for _ in range(max_steps):
-                content, tool_call, reply_kind, action = request_tool_call()
+                content, tool_calls, reply_kind, action = request_tool_calls()
                 if action == "reject":
                     raise ValueError("Агент не смог сформировать корректный вызов инструмента. Уточните запрос.")
                 if action == "repair":
@@ -1869,35 +1904,36 @@ class Handler(BaseHTTPRequestHandler):
                                    "Если подходящий шаблон неясен, задай уточняющий вопрос.",
                     })
                     continue
-                if tool_call:
-                    tool_name = str(tool_call["name"])
-                    progress_messages = {
-                        "list_queries": ("catalog", "Получаю актуальный каталог запросов"),
-                        "explain_schema": ("schema", "Проверяю структуру данных"),
-                        "run_named_query": ("query", "Запрашиваю данные из GraphDB"),
-                        "sparql_select": ("query", "Выполняю выборку в GraphDB"),
-                    }
-                    stage, progress_message = progress_messages.get(
-                        tool_name, ("tool", "Выполняю шаг обработки данных"),
-                    )
-                    set_agent_progress(request_id, stage, progress_message)
-                    last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
-                    if tool_name == "list_queries" and catalog_result is not None:
-                        tool_result = catalog_result
-                    else:
-                        mcp_calls += 1
-                        tool_result = _mcp_tool_call(
-                            tool_name, tool_call["arguments"], request_id, mcp_calls - 1, model_calls,
-                        )
-                    last_tool_result = tool_result
-                    tool_steps += 1
+                if tool_calls:
                     messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": "Результат вызова инструмента:\n" + json.dumps(
-                            tool_result, ensure_ascii=False
-                        ),
-                    })
+                    for tool_call in tool_calls:
+                        tool_name = str(tool_call["name"])
+                        progress_messages = {
+                            "list_queries": ("catalog", "Получаю актуальный каталог запросов"),
+                            "explain_schema": ("schema", "Проверяю структуру данных"),
+                            "run_named_query": ("query", "Запрашиваю данные из GraphDB"),
+                            "sparql_select": ("query", "Выполняю выборку в GraphDB"),
+                        }
+                        stage, progress_message = progress_messages.get(
+                            tool_name, ("tool", "Выполняю шаг обработки данных"),
+                        )
+                        set_agent_progress(request_id, stage, progress_message)
+                        last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
+                        if tool_name == "list_queries" and catalog_result is not None:
+                            tool_result = catalog_result
+                        else:
+                            mcp_calls += 1
+                            tool_result = _mcp_tool_call(
+                                tool_name, tool_call["arguments"], request_id, mcp_calls - 1, model_calls,
+                            )
+                        last_tool_result = tool_result
+                        tool_steps += 1
+                        messages.append({
+                            "role": "user",
+                            "content": "Результат вызова инструмента:\n" + json.dumps(
+                                tool_result, ensure_ascii=False
+                            ),
+                        })
                     messages.append({
                         "role": "system",
                         "content": "Если нужны дополнительные данные, вызови следующий MCP-инструмент. "
@@ -1918,11 +1954,10 @@ class Handler(BaseHTTPRequestHandler):
 
                 break
 
-            if reply_kind == "tool_call":
+            if reply_kind in {"tool_call", "tool_calls"}:
                 raise ValueError("Агент исчерпал лимит шагов до формирования ответа.")
-            if tool_steps == 0:
-                if not content:
-                    raise ValueError("Агент не смог сформировать ответ")
+            if tool_steps == 0 and not content:
+                raise ValueError("Агент не смог сформировать ответ")
             if not content:
                 raise ValueError("Агент не смог сформировать финальный ответ после MCP")
 

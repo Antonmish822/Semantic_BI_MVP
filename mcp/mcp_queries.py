@@ -88,6 +88,19 @@ NAMED_QUERIES: dict[str, NamedQuery] = {
         template_file="lead_lifecycle.rq",
         description="Жизненный цикл лидов и первые активности.",
     ),
+    "red_leads_slow_first_activity": NamedQuery(
+        name="red_leads_slow_first_activity",
+        template_file="red_leads_slow_first_activity.rq",
+        description=(
+            "10 последних лидов, где первая активность наступила позже чем через 2 часа "
+            "после создания или отсутствует."
+        ),
+    ),
+    "recent_lead_activities": NamedQuery(
+        name="recent_lead_activities",
+        template_file="recent_lead_activities.rq",
+        description="Последние активности по лидам.",
+    ),
     "lead_conversion_trend": NamedQuery(
         name="lead_conversion_trend",
         template_file="lead_conversion_trend.rq",
