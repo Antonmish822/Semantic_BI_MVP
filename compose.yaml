@@ -10,6 +10,7 @@ services:
       - /tmp
     volumes:
       - profile_logs:/app/logs
+      - ./ontologies:/app/ontologies:rw
     env_file:
       - .env
     environment:

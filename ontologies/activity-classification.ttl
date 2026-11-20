@@ -1,0 +1,23 @@
+@prefix b24:  <https://example.org/bitrix24#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:bitrix24:ontology:activity-classification>
+    a owl:Ontology ;
+    rdfs:label "Bitrix24 activity classification"@en ;
+    rdfs:label "Классификация активностей Bitrix24"@ru ;
+    rdfs:comment "Выводит b24:Activity по наличию b24:typeId или b24:provider. Оба свойства являются признаками активности в RDF-проекции. Часть общей онтлогии"@ru .
+
+b24:Activity a owl:Class ;
+    rdfs:label "Activity"@en ;
+    rdfs:label "Активность"@ru .
+
+# В OWL 2 RL каждое domain-правило независимо выводит тип Activity.
+b24:typeId a owl:DatatypeProperty ;
+    rdfs:domain b24:Activity ;
+    rdfs:range xsd:integer .
+
+b24:provider a owl:DatatypeProperty ;
+    rdfs:domain b24:Activity ;
+    rdfs:range xsd:string .

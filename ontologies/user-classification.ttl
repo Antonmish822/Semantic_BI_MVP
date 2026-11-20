@@ -1,0 +1,45 @@
+@prefix b24:  <https://example.org/bitrix24#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:bitrix24:ontology:user-classification>
+    a owl:Ontology ;
+    rdfs:label "Bitrix24 user classification"@en ;
+    rdfs:label "Классификация сотрудников Bitrix24"@ru ;
+    rdfs:comment "Выводит тип b24:User по наличию любого из специфичных пользовательских свойств."@ru .
+
+b24:User a owl:Class ;
+    rdfs:label "User"@en ;
+    rdfs:label "Сотрудник"@ru .
+
+# Наличие любого из полей пользователя классифицирует субъект как b24:User.
+b24:active a owl:DatatypeProperty ;
+    rdfs:domain b24:User ;
+    rdfs:range xsd:boolean .
+
+b24:firstName a owl:DatatypeProperty ;
+    rdfs:domain b24:User ;
+    rdfs:range xsd:string .
+
+b24:lastName a owl:DatatypeProperty ;
+    rdfs:domain b24:User ;
+    rdfs:range xsd:string .
+
+b24:fullName a owl:DatatypeProperty ;
+    rdfs:domain b24:User ;
+    rdfs:range xsd:string .
+
+b24:department a owl:DatatypeProperty ;
+    rdfs:domain b24:User ;
+    rdfs:range xsd:string .
+
+# Эти связи дополнительно классифицируют объект-сотрудника по rdfs:range.
+b24:assignedTo a owl:ObjectProperty ;
+    rdfs:range b24:User .
+
+b24:responsible a owl:ObjectProperty ;
+    rdfs:range b24:User .
+
+b24:lastActivityBy a owl:ObjectProperty ;
+    rdfs:range b24:User .
