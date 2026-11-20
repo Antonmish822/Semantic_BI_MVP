@@ -15,9 +15,71 @@ b24:Activity a owl:Class ;
 
 # В OWL 2 RL каждое domain-правило независимо выводит тип Activity.
 b24:typeId a owl:DatatypeProperty ;
+    rdfs:label "Идентификатор типа активности"@ru ;
     rdfs:domain b24:Activity ;
     rdfs:range xsd:integer .
 
 b24:provider a owl:DatatypeProperty ;
+    rdfs:label "Провайдер активности"@ru ;
     rdfs:domain b24:Activity ;
     rdfs:range xsd:string .
+
+b24:bindingDeal a owl:ObjectProperty ;
+    rdfs:label "Связанная сделка"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:bindingLead a owl:ObjectProperty ;
+    rdfs:label "Связанный лид"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:completed a owl:DatatypeProperty ;
+    rdfs:label "Завершена"@ru ;
+    rdfs:domain b24:Activity .
+
+# Временные метки встречаются и у других сущностей, поэтому для них
+# не задаётся domain, который выводил бы Activity для этих сущностей.
+b24:createdAt a owl:DatatypeProperty ;
+    rdfs:label "Дата создания"@ru .
+
+b24:deadline a owl:DatatypeProperty ;
+    rdfs:label "Срок выполнения"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:direction a owl:DatatypeProperty ;
+    rdfs:label "Направление активности"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:endAt a owl:DatatypeProperty ;
+    rdfs:label "Дата окончания"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:modifiedAt a owl:DatatypeProperty ;
+    rdfs:label "Дата изменения"@ru .
+
+b24:owner a owl:ObjectProperty ;
+    rdfs:label "Владелец"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:ownerTypeId a owl:DatatypeProperty ;
+    rdfs:label "Тип владельца"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:priority a owl:DatatypeProperty ;
+    rdfs:label "Приоритет"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:providerTypeId a owl:DatatypeProperty ;
+    rdfs:label "Тип провайдера"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:responsible a owl:ObjectProperty ;
+    rdfs:label "Ответственный"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:startAt a owl:DatatypeProperty ;
+    rdfs:label "Дата начала"@ru ;
+    rdfs:domain b24:Activity .
+
+b24:subject a owl:DatatypeProperty ;
+    rdfs:label "Тема"@ru ;
+    rdfs:domain b24:Activity .

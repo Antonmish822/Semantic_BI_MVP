@@ -1,6 +1,11 @@
 (() => {
   const $ = id => document.getElementById(id);
   const state = { slug: null, sha: null, savedText: '', dirty: false, assistantHistory: [], assistantResult: null, assistantReady: false, assistantSlug: null };
+  const tokenStorageKey = 'crm-pulse-ontology-admin-token';
+  try { $('admin-token').value=localStorage.getItem(tokenStorageKey)||''; } catch (_) {}
+  $('admin-token').addEventListener('input',()=>{
+    try { if(token())localStorage.setItem(tokenStorageKey,token());else localStorage.removeItem(tokenStorageKey); } catch (_) {}
+  });
   const token = () => $('admin-token').value;
   const currentSlug = () => $('new-slug').value.trim();
   const currentFileSha = () => currentSlug() === state.slug ? state.sha : null;
@@ -31,6 +36,76 @@
     try { const data=await api(`/api/ontologies/${encodeURIComponent(slug)}`);state.slug=data.slug;state.sha=data.sha256;state.savedText=data.text;state.dirty=false;$('editor').value=data.text;$('new-slug').value=data.slug;$('current-meta').textContent=`${data.filename} · граф ${data.uri}`;$('publish-status').textContent=({published:'Статус: опубликовано · содержимое графа совпадает',unpublished:'Статус: не опубликовано',unsupported:'Статус: публикация доступна только в GraphDB',missing:'Статус: граф отсутствует',unavailable:'Статус: GraphDB недоступна или граф не удалось прочитать'})[data.publication_status]||'Статус: не опубликовано';state.assistantResult=null;notice('Файл загружен.');}
     catch(error){notice(error.message,true);}
   }
+  function renderClassStatistics(data) {
+    const container=$('class-statistics');container.replaceChildren();
+    container.append(element('p',`Классов найдено: ${data.class_count}. Пространство: ${data.namespace}`,'panel-subtitle'));
+    if(!data.classes.length){container.append(element('p','В этом пространстве имён классы не найдены.','empty-state'));return;}
+    renderClassRelations(container,data);
+    for(const classInfo of data.classes){
+      const card=element('article',undefined,'class-stat-card');
+      card.append(element('h3',classInfo.label_ru||classInfo.name));
+      card.append(element('code',classInfo.uri,'class-stat-uri'));
+      if(classInfo.comment_ru)card.append(element('p',classInfo.comment_ru,'class-stat-comment'));
+      card.append(element('p',`Экземпляров класса: ${classInfo.instance_count}`,'class-stat-count'));
+      if(!classInfo.features.length){card.append(element('p','Непустые признаки не найдены.','empty-state'));container.append(card);continue;}
+      const disclosure=document.createElement('details');disclosure.className='class-feature-disclosure';
+      const summary=document.createElement('summary');summary.textContent=`Признаки (${classInfo.features.length})`;disclosure.append(summary);
+      const table=document.createElement('table');table.className='class-feature-table';
+      const head=document.createElement('thead');const heading=document.createElement('tr');
+      for(const title of ['Признак','Label','Экземпляров с непустым значением','Комментарий'])heading.append(element('th',title));
+      head.append(heading);table.append(head);
+      const body=document.createElement('tbody');
+      for(const feature of classInfo.features){
+        const row=document.createElement('tr');
+        const name=element('td',feature.name);name.title=feature.uri;
+        row.append(name,element('td',feature.label_ru||'—'),element('td',String(feature.instances_with_value)),element('td',feature.comment_ru||'—'));
+        body.append(row);
+      }
+      table.append(body);disclosure.append(table);card.append(disclosure);container.append(card);
+    }
+  }
+  function renderClassRelations(container,data) {
+    const section=element('section',undefined,'class-relations');
+    section.append(element('h3','Связи классов по domain / range'));
+    const relations=data.relations||[];
+    if(!relations.length){section.append(element('p','Для классов этого пространства не найдены свойства с domain и range, ведущими к классам в этом же пространстве.','empty-state'));container.append(section);return;}
+    const classByUri=new Map(data.classes.map(item=>[item.uri,item.label_ru||item.name]));
+    const svgNs='http://www.w3.org/2000/svg';
+    const svg=document.createElementNS(svgNs,'svg');
+    svg.setAttribute('viewBox',`0 0 850 ${Math.max(100,relations.length*76+24)}`);
+    svg.setAttribute('role','img');svg.setAttribute('aria-label','Диаграмма связей классов по domain и range');svg.classList.add('class-relations-svg');
+    const defs=document.createElementNS(svgNs,'defs');const marker=document.createElementNS(svgNs,'marker');
+    marker.setAttribute('id','class-relation-arrow');marker.setAttribute('viewBox','0 0 10 10');marker.setAttribute('refX','8');marker.setAttribute('refY','5');marker.setAttribute('markerWidth','7');marker.setAttribute('markerHeight','7');marker.setAttribute('orient','auto-start-reverse');
+    const arrow=document.createElementNS(svgNs,'path');arrow.setAttribute('d','M 0 0 L 10 5 L 0 10 z');arrow.classList.add('class-relation-arrow');marker.append(arrow);defs.append(marker);svg.append(defs);
+    const addSvgText=(x,y,value,className)=>{const text=document.createElementNS(svgNs,'text');text.setAttribute('x',String(x));text.setAttribute('y',String(y));text.setAttribute('text-anchor','middle');text.classList.add(className);text.textContent=value;svg.append(text);};
+    for(const [index,relation] of relations.entries()){
+      const y=14+index*76, center=y+28;
+      const source=classByUri.get(relation.domain)||relation.domain.split(/[\/#]/).pop();
+      const target=classByUri.get(relation.range)||relation.range.split(/[\/#]/).pop();
+      const property=relation.property_label_ru||relation.property_name;
+      const line=document.createElementNS(svgNs,'line');line.setAttribute('x1','240');line.setAttribute('y1',String(center));line.setAttribute('x2','610');line.setAttribute('y2',String(center));line.setAttribute('marker-end','url(#class-relation-arrow)');line.classList.add('class-relation-line');svg.append(line);
+      for(const [x,label] of [[14,source],[620,target]]){
+        const rect=document.createElementNS(svgNs,'rect');rect.setAttribute('x',String(x));rect.setAttribute('y',String(y));rect.setAttribute('width','216');rect.setAttribute('height','48');rect.setAttribute('rx','8');rect.classList.add('class-relation-node');svg.append(rect);
+        addSvgText(x+108,center+4,label,'class-relation-node-label');
+      }
+      addSvgText(425,center-7,property,'class-relation-property');
+      const title=document.createElementNS(svgNs,'title');title.textContent=`${source} — ${property} → ${target}`;svg.append(title);
+    }
+    const scrollRegion=element('div',undefined,'class-relations-scroll');scrollRegion.append(svg);
+    section.append(scrollRegion);container.append(section);
+  }
+  $('class-statistics-form').addEventListener('submit',async event=>{
+    event.preventDefault();
+    const namespace=$('class-statistics-namespace').value.trim();
+    if(!namespace)return;
+    const button=$('class-statistics-submit');button.disabled=true;button.textContent='Запрашиваю…';
+    $('class-statistics').replaceChildren(element('p','Запрашиваю статистику из RDF-хранилища…','empty-state'));
+    try{
+      const data=await api('/api/ontologies/class-statistics',{method:'POST',body:JSON.stringify({namespace})});
+      renderClassStatistics(data);
+    }catch(error){$('class-statistics').replaceChildren(element('p',error.message,'assistant-error'));}
+    finally{button.disabled=false;button.textContent='Показать статистику';}
+  });
   $('editor').addEventListener('input',()=>{changed();state.assistantResult=null;});
   $('new-slug').addEventListener('input',()=>{state.assistantResult=null;const slug=currentSlug();if(slug&&slug!==state.slug)$('current-meta').textContent=`${slug}.ttl · граф urn:bitrix24:ontology:${slug} · новый файл`;});
   $('validate').onclick=async()=>{try{const slug=currentSlug();const d=await api('/api/ontologies/validate',{method:'POST',body:JSON.stringify({slug,text:$('editor').value})});notice(`Turtle корректен. URI: ${d.uri}`);}catch(e){notice(e.message,true);}};

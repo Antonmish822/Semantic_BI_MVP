@@ -1862,6 +1862,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/agent/profile":
             self._record_browser_profile()
             return
+        if path == "/api/ontologies/class-statistics":
+            self._ontology_class_statistics()
+            return
         if path == "/api/ontology-assistant/suggest":
             self._ontology_assistant_suggest()
             return
@@ -2093,6 +2096,184 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         self._ontology_write("PUT")
+
+    def _ontology_class_statistics(self) -> None:
+        try:
+            payload = _read_json_body(self, max_bytes=4096)
+        except (ValueError, UnicodeError):
+            self._send_json(400, {"error": "Некорректный JSON запроса статистики"})
+            return
+
+        namespace = payload.get("namespace")
+        if not isinstance(namespace, str):
+            self._send_json(400, {"error": "Укажите URI пространства имён"})
+            return
+        namespace = namespace.strip()
+        parsed_namespace = urlsplit(namespace)
+        if (
+            not namespace or len(namespace) > 512 or not parsed_namespace.scheme
+            or (parsed_namespace.scheme in {"http", "https"} and not parsed_namespace.netloc)
+            or any(char.isspace() or ord(char) < 0x20 for char in namespace)
+        ):
+            self._send_json(400, {"error": "Укажите корректное абсолютное URI пространства имён"})
+            return
+
+        namespace_literal = sparql_literal(namespace)
+        class_query = """
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+SELECT ?class (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
+       (COUNT(DISTINCT ?instance) AS ?instanceCount)
+WHERE {
+  {
+    SELECT DISTINCT ?class WHERE {
+      {
+        { ?class a owl:Class }
+        UNION { ?class a rdfs:Class }
+        UNION { ?child rdfs:subClassOf ?class }
+        UNION { ?instance a ?class }
+      }
+      FILTER(isIRI(?class))
+      FILTER(STRSTARTS(STR(?class), {{namespace}}))
+    }
+  }
+  OPTIONAL {
+    ?class rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+  OPTIONAL {
+    ?class rdfs:comment ?comment .
+    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
+  }
+  OPTIONAL { ?instance a ?class }
+}
+GROUP BY ?class
+ORDER BY LCASE(STR(?class))
+""".replace("{{namespace}}", namespace_literal)
+        feature_query = """
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?class ?feature
+       (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
+       (COUNT(DISTINCT ?instance) AS ?instancesWithValue)
+WHERE {
+  ?instance a ?class ; ?feature ?value .
+  FILTER(STRSTARTS(STR(?class), {{namespace}}))
+  FILTER(?feature != rdf:type)
+  FILTER(!isLiteral(?value) || STRLEN(STR(?value)) > 0)
+  OPTIONAL {
+    ?feature rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+  OPTIONAL {
+    ?feature rdfs:comment ?comment .
+    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
+  }
+}
+GROUP BY ?class ?feature
+ORDER BY LCASE(STR(?class)) LCASE(STR(?feature))
+""".replace("{{namespace}}", namespace_literal)
+        relation_query = """
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?property ?domain ?range (SAMPLE(?label) AS ?labelRu)
+WHERE {
+  ?property rdfs:domain ?domain ; rdfs:range ?range .
+  FILTER(isIRI(?domain) && isIRI(?range))
+  FILTER(STRSTARTS(STR(?domain), {{namespace}}))
+  FILTER(STRSTARTS(STR(?range), {{namespace}}))
+  OPTIONAL {
+    ?property rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+}
+GROUP BY ?property ?domain ?range
+ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
+""".replace("{{namespace}}", namespace_literal)
+
+        try:
+            store = create_store_client()
+            class_rows = store.select(class_query)
+            feature_rows = store.select(feature_query)
+            relation_rows = store.select(relation_query)
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError) as exc:
+            self.log_error("Ontology class statistics failed (%s)", type(exc).__name__)
+            self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища"})
+            return
+
+        def binding(row: dict[str, dict[str, str]], name: str) -> str:
+            value = row.get(name, {}).get("value", "")
+            return value if isinstance(value, str) else ""
+
+        def local_name(uri: str) -> str:
+            return uri.rstrip("/#").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+
+        classes: dict[str, dict[str, object]] = {}
+        for row in class_rows:
+            class_uri = binding(row, "class")
+            if not class_uri:
+                continue
+            try:
+                instance_count = int(binding(row, "instanceCount") or "0")
+            except ValueError:
+                instance_count = 0
+            classes[class_uri] = {
+                "uri": class_uri,
+                "name": local_name(class_uri),
+                "label_ru": binding(row, "labelRu") or None,
+                "comment_ru": binding(row, "commentRu") or None,
+                "instance_count": instance_count,
+                "features": [],
+            }
+
+        for row in feature_rows:
+            class_uri = binding(row, "class")
+            feature_uri = binding(row, "feature")
+            if not class_uri or not feature_uri:
+                continue
+            if class_uri not in classes:
+                classes[class_uri] = {
+                    "uri": class_uri,
+                    "name": local_name(class_uri),
+                    "label_ru": None,
+                    "comment_ru": None,
+                    "instance_count": 0,
+                    "features": [],
+                }
+            try:
+                populated_count = int(binding(row, "instancesWithValue") or "0")
+            except ValueError:
+                populated_count = 0
+            feature = {
+                "uri": feature_uri,
+                "name": local_name(feature_uri),
+                "label_ru": binding(row, "labelRu") or None,
+                "comment_ru": binding(row, "commentRu") or None,
+                "instances_with_value": populated_count,
+            }
+            classes[class_uri]["features"].append(feature)
+
+        result = sorted(classes.values(), key=lambda item: str(item["uri"]))
+        relations = []
+        for row in relation_rows:
+            property_uri = binding(row, "property")
+            domain_uri = binding(row, "domain")
+            range_uri = binding(row, "range")
+            if not property_uri or not domain_uri or not range_uri:
+                continue
+            relations.append({
+                "property": property_uri,
+                "property_name": local_name(property_uri),
+                "property_label_ru": binding(row, "labelRu") or None,
+                "domain": domain_uri,
+                "range": range_uri,
+            })
+        self._send_json(200, {
+            "namespace": namespace,
+            "class_count": len(result),
+            "classes": result,
+            "relations": relations,
+        })
 
     def _ontology_assistant_suggest(self) -> None:
         token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")

@@ -55,6 +55,7 @@ b24:lastActivityBy a owl:ObjectProperty ;
     rdfs:domain b24:Deal ;
     rdfs:range b24:User .
 
+
 b24:company a owl:ObjectProperty ;
     rdfs:domain b24:Deal .
 
