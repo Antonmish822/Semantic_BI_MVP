@@ -88,10 +88,20 @@ docker compose down
 
 ## AI Agent (Polza.ai + MCP)
 
-Минимальный HTTP API доступен по `POST /api/agent` и использует Polza.ai (OpenAI‑совместимый API) для генерации ответа и MCP-инструменты для выборок из RDF. История сообщений хранится в памяти процесса по `session_id`.
+Минимальный HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/agent/progress` и проксируется дашбордом на выделенный сервис агента. История сообщений хранится в памяти процесса агента по `session_id`.
+
+Режимы маршрутизации:
+
+- `AGENT_MODE=proxy` — браузер вызывает `POST /api/agent` на дашборде, дашборд проксирует запросы в `AGENT_BASE_URL`.
+- `AGENT_MODE=direct` — дашборд отключает агентский proxy (возвращает 404 на `/api/agent*`).
 
 Переменные окружения:
 
+- `AGENT_MODE` — режим маршрутизации (`proxy` или `direct`);
+- `AGENT_BASE_URL` — базовый URL сервиса агента (по умолчанию `http://127.0.0.1:8091`);
+- `AGENT_TIMEOUT` — таймаут проксирования к агенту;
+- `AGENT_CORS_ALLOW_ORIGINS` — CORS-оригины для сервиса агента (по умолчанию `*`);
+- `AGENT_ALLOW_SPARQL` — разрешить прямые вызовы `sparql_select` (`0/1`);
 - `POLZA_BASE_URL` — базовый URL API (по умолчанию `https://polza.ai/api/v1`);
 - `POLZA_API_KEY` — ключ доступа к Polza.ai;
 - `POLZA_MODEL` — модель Polza.ai (по умолчанию `polza-chat`);
@@ -104,7 +114,8 @@ docker compose down
 
 ## Структура
 
-- `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей, плюс endpoint `/api/agent`;
+- `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей, плюс proxy на `/api/agent`;
+- `agent_service.py` — HTTP API агента (FastAPI) и логика Polza.ai + MCP;
 - `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
 - `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html` — страницы интерфейса;
 - `static/*.js` и `static/styles.css` — клиентская логика и стили;

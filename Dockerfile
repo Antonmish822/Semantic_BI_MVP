@@ -4,7 +4,17 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
+COPY pyproject.toml ./pyproject.toml
+RUN python - <<'PY'
+import tomllib
+from pathlib import Path
+payload = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
+deps = payload.get('project', {}).get('dependencies', [])
+Path('/tmp/requirements.txt').write_text('\n'.join(deps), encoding='utf-8')
+PY
+RUN if [ -s /tmp/requirements.txt ]; then pip install --no-cache-dir -r /tmp/requirements.txt; fi
 COPY server.py ./server.py
+COPY agent_service.py ./agent_service.py
 COPY mcp ./mcp
 COPY queries ./queries
 COPY docs ./docs
