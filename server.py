@@ -7,15 +7,17 @@ import csv
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, quote_plus, urlsplit
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -169,10 +171,279 @@ CACHE_LOCK = threading.RLock()
 GRAPH_QUERY_EXCEPTIONS = (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError, json.JSONDecodeError)
 AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
 AGENT_SESSIONS_LOCK = threading.RLock()
+AUTH_SESSIONS: dict[str, dict[str, object]] = {}
+AUTH_SESSIONS_LOCK = threading.RLock()
 
 
 def cache_fallback_enabled() -> bool:
     return os.environ.get("CACHE_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_enabled() -> bool:
+    return os.environ.get("AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_cookie_name() -> str:
+    return os.environ.get("AUTH_COOKIE_NAME", "crm_pulse_session").strip()
+
+
+def auth_cookie_max_age() -> int:
+    try:
+        return max(300, int(os.environ.get("AUTH_COOKIE_MAX_AGE", "86400")))
+    except ValueError:
+        return 86400
+
+
+def auth_cookie_domain() -> str | None:
+    value = os.environ.get("AUTH_COOKIE_DOMAIN", "").strip()
+    return value or None
+
+
+def auth_cookie_same_site() -> str:
+    value = os.environ.get("AUTH_COOKIE_SAME_SITE", "Lax").strip()
+    return value if value in {"Lax", "Strict", "None"} else "Lax"
+
+
+def auth_cookie_secure() -> bool:
+    return os.environ.get("AUTH_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_yandex_client_id() -> str:
+    return os.environ.get("YANDEX_CLIENT_ID", "").strip()
+
+
+def auth_yandex_client_secret() -> str:
+    return os.environ.get("YANDEX_CLIENT_SECRET", "").strip()
+
+
+def auth_yandex_redirect_uri() -> str:
+    return os.environ.get("YANDEX_REDIRECT_URI", "").strip()
+
+
+def auth_yandex_scopes() -> str:
+    return os.environ.get("YANDEX_SCOPES", "login:email login:info").strip()
+
+
+def auth_yandex_auth_url() -> str:
+    return os.environ.get("YANDEX_AUTH_URL", "https://oauth.yandex.ru/authorize").strip()
+
+
+def auth_yandex_token_url() -> str:
+    return os.environ.get("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token").strip()
+
+
+def auth_yandex_profile_url() -> str:
+    return os.environ.get("YANDEX_PROFILE_URL", "https://login.yandex.ru/info").strip()
+
+
+def auth_allowed_domains() -> set[str]:
+    raw = os.environ.get("AUTH_ALLOWED_DOMAINS", "").strip()
+    if not raw:
+        return set()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def auth_logout_redirect() -> str:
+    return os.environ.get("AUTH_LOGOUT_REDIRECT", "/").strip() or "/"
+
+
+def auth_debug() -> bool:
+    return os.environ.get("AUTH_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _secure_cookie_prefix() -> str:
+    return "__Host-" if auth_cookie_secure() and auth_cookie_domain() is None else ""
+
+
+def _cookie_name() -> str:
+    return f"{_secure_cookie_prefix()}{auth_cookie_name()}".strip()
+
+
+def _session_cookie(value: str) -> str:
+    cookie = SimpleCookie()
+    cookie[_cookie_name()] = value
+    cookie[_cookie_name()]["path"] = "/"
+    cookie[_cookie_name()]["max-age"] = str(auth_cookie_max_age())
+    cookie[_cookie_name()]["httponly"] = True
+    cookie[_cookie_name()]["samesite"] = auth_cookie_same_site()
+    if auth_cookie_domain():
+        cookie[_cookie_name()]["domain"] = auth_cookie_domain()
+    if auth_cookie_same_site() == "None" or auth_cookie_secure():
+        cookie[_cookie_name()]["secure"] = True
+    return cookie.output(header="").strip()
+
+
+def _clear_session_cookie() -> str:
+    cookie = SimpleCookie()
+    cookie[_cookie_name()] = ""
+    cookie[_cookie_name()]["path"] = "/"
+    cookie[_cookie_name()]["max-age"] = "0"
+    cookie[_cookie_name()]["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+    if auth_cookie_domain():
+        cookie[_cookie_name()]["domain"] = auth_cookie_domain()
+    return cookie.output(header="").strip()
+
+
+def _auth_log(message: str) -> None:
+    if auth_debug():
+        print(message)
+
+
+def _read_cookies(headers) -> dict[str, str]:
+    raw = headers.get("Cookie", "")
+    if not raw:
+        return {}
+    cookie = SimpleCookie()
+    cookie.load(raw)
+    return {key: morsel.value for key, morsel in cookie.items()}
+
+
+def _get_session_id(headers) -> str | None:
+    cookies = _read_cookies(headers)
+    return cookies.get(_cookie_name())
+
+
+def _get_auth_session(session_id: str | None) -> dict[str, object] | None:
+    if not session_id:
+        return None
+    with AUTH_SESSIONS_LOCK:
+        session = AUTH_SESSIONS.get(session_id)
+        if not session:
+            return None
+        expires_at = session.get("expires_at")
+        if isinstance(expires_at, float) and expires_at < time.time():
+            AUTH_SESSIONS.pop(session_id, None)
+            return None
+        return session
+
+
+def _set_auth_session(session_id: str, profile: dict[str, object]) -> None:
+    expires_at = time.time() + auth_cookie_max_age()
+    with AUTH_SESSIONS_LOCK:
+        if len(AUTH_SESSIONS) > 2048:
+            AUTH_SESSIONS.pop(next(iter(AUTH_SESSIONS)))
+        AUTH_SESSIONS[session_id] = {"profile": profile, "expires_at": expires_at}
+
+
+def _require_auth(headers) -> dict[str, object] | None:
+    if not auth_enabled():
+        return {"profile": {"login": "disabled"}}
+    return _get_auth_session(_get_session_id(headers))
+
+
+def _build_login_redirect(current_path: str) -> str:
+    return f"/auth/login?next={quote(current_path or '/')}"
+
+
+def _is_public_path(path: str) -> bool:
+    if path.startswith("/vendor/"):
+        return True
+    return path in {
+        "/auth/login",
+        "/auth/callback",
+        "/auth/logout",
+        "/auth/status",
+        "/styles.css",
+    }
+
+
+def _is_static_asset(path: str) -> bool:
+    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/styles.css"} or path.startswith("/vendor/")
+
+
+def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
+    return urlsplit(handler.path).path
+
+
+def _fetch_json(url: str, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, object]:
+    request = Request(url, data=data, method=method, headers=headers or {})
+    with urlopen(request, timeout=20) as response:
+        payload = response.read()
+        return json.loads(payload.decode("utf-8"))
+
+
+def _post_form(url: str, data: dict[str, str], headers: dict[str, str] | None = None) -> dict[str, object]:
+    encoded = urlencode(data).encode("utf-8")
+    request = Request(url, data=encoded, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
+    with urlopen(request, timeout=20) as response:
+        payload = response.read()
+        return json.loads(payload.decode("utf-8"))
+
+
+def _oauth_state_payload(next_path: str) -> str:
+    nonce = secrets.token_urlsafe(16)
+    return base64.urlsafe_b64encode(json.dumps({"nonce": nonce, "next": next_path}).encode("utf-8")).decode("ascii")
+
+
+def _parse_oauth_state(raw: str) -> dict[str, object] | None:
+    try:
+        decoded = base64.urlsafe_b64decode(raw.encode("ascii") + b"==").decode("utf-8")
+        payload = json.loads(decoded)
+        if isinstance(payload, dict) and isinstance(payload.get("nonce"), str):
+            return payload
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _build_auth_url(state: str) -> str:
+    query = urlencode({
+        "response_type": "code",
+        "client_id": auth_yandex_client_id(),
+        "redirect_uri": auth_yandex_redirect_uri(),
+        "scope": auth_yandex_scopes(),
+        "state": state,
+        "force_confirm": "yes",
+    })
+    return f"{auth_yandex_auth_url()}?{query}"
+
+
+def _exchange_token(code: str) -> dict[str, object]:
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": auth_yandex_client_id(),
+        "client_secret": auth_yandex_client_secret(),
+        "redirect_uri": auth_yandex_redirect_uri(),
+    }
+    return _post_form(auth_yandex_token_url(), data)
+
+
+def _fetch_profile(access_token: str) -> dict[str, object]:
+    params = urlencode({"format": "json"})
+    url = f"{auth_yandex_profile_url()}?{params}"
+    headers = {"Authorization": f"OAuth {access_token}"}
+    return _fetch_json(url, headers=headers)
+
+
+def _profile_email(profile: dict[str, object]) -> str:
+    email = profile.get("default_email") or profile.get("email")
+    if isinstance(email, str):
+        return email
+    emails = profile.get("emails")
+    if isinstance(emails, list) and emails:
+        for item in emails:
+            if isinstance(item, str) and item:
+                return item
+    return ""
+
+
+def _is_allowed_profile(profile: dict[str, object]) -> bool:
+    domains = auth_allowed_domains()
+    if not domains:
+        return True
+    email = _profile_email(profile).lower()
+    if not email or "@" not in email:
+        return False
+    return email.split("@", 1)[1] in domains
+
+
+def _render_auth_error(message: str) -> bytes:
+    payload = {
+        "error": message,
+        "help": "Проверьте настройки OAuth (YANDEX_CLIENT_ID/SECRET/REDIRECT_URI) и разрешённые домены",
+    }
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 def load_env() -> None:
@@ -1192,8 +1463,92 @@ def get_view_state(page: str, project: str = "all", category: str = "all", emplo
 class Handler(BaseHTTPRequestHandler):
     server_version = "SemanticBICRMPulse/1.0"
 
+    def _is_authenticated(self) -> bool:
+        return _require_auth(self.headers) is not None
+
+    def _send_redirect(self, location: str, *, cookie: str | None = None) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+    def _auth_required(self, path: str) -> bool:
+        if not auth_enabled():
+            return False
+        if _is_public_path(path):
+            return False
+        if _is_static_asset(path):
+            return True
+        return path.startswith("/api/") or path in {"/", "/index.html", "/leads", "/leads.html", "/employees", "/employees.html", "/agent", "/agent.html"}
+
+    def _handle_auth_gate(self, path: str) -> bool:
+        if not self._auth_required(path):
+            return False
+        if self._is_authenticated():
+            return False
+        self._send_redirect(_build_login_redirect(path))
+        return True
+
+    def _handle_auth_routes(self, path: str) -> bool:
+        if path == "/auth/status":
+            session = _require_auth(self.headers)
+            if not session:
+                self._send_json(401, {"authenticated": False})
+            else:
+                profile = session.get("profile", {}) if isinstance(session, dict) else {}
+                self._send_json(200, {"authenticated": True, "profile": profile})
+            return True
+        if path == "/auth/login":
+            if not auth_enabled():
+                self._send_json(404, {"error": "Auth disabled"})
+                return True
+            next_path = parse_qs(urlsplit(self.path).query).get("next", ["/"])[0]
+            state = _oauth_state_payload(next_path)
+            self._send_redirect(_build_auth_url(state))
+            return True
+        if path == "/auth/callback":
+            if not auth_enabled():
+                self._send_json(404, {"error": "Auth disabled"})
+                return True
+            params = parse_qs(urlsplit(self.path).query)
+            code = params.get("code", [""])[0]
+            state_raw = params.get("state", [""])[0]
+            payload = _parse_oauth_state(state_raw)
+            if not code or not payload:
+                self._send(400, _render_auth_error("Некорректный ответ OAuth"), "application/json; charset=utf-8")
+                return True
+            try:
+                token = _exchange_token(code)
+                access_token = token.get("access_token")
+                if not isinstance(access_token, str) or not access_token:
+                    raise ValueError("token missing")
+                profile = _fetch_profile(access_token)
+            except Exception as exc:
+                _auth_log(f"OAuth error: {type(exc).__name__}")
+                self._send(502, _render_auth_error("Не удалось получить токен"), "application/json; charset=utf-8")
+                return True
+            if not _is_allowed_profile(profile):
+                self._send(403, _render_auth_error("Доступ запрещён"), "application/json; charset=utf-8")
+                return True
+            session_id = secrets.token_urlsafe(24)
+            _set_auth_session(session_id, profile)
+            next_path = str(payload.get("next", "/")) if isinstance(payload, dict) else "/"
+            self._send_redirect(next_path, cookie=_session_cookie(session_id))
+            return True
+        if path == "/auth/logout":
+            self._send_redirect(auth_logout_redirect(), cookie=_clear_session_cookie())
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
         if path in {"/", "/index.html"}:
             self._send_file(STATIC / "index.html", "text/html; charset=utf-8")
         elif path in {"/leads", "/leads.html"}:
@@ -1473,6 +1828,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
         if path in {"/api/agent/profile", "/api/agent"}:
             if agent_mode() != "proxy":
                 self._send_json(404, {"error": "Agent proxy disabled"})
@@ -1504,7 +1863,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8")
 
-    def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None) -> None:
+    def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None, cookie: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -1512,6 +1871,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         if request_id:
             self.send_header("X-Request-ID", request_id)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 

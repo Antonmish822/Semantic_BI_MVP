@@ -53,7 +53,8 @@ cp .env.example .env
 - `RDF_BACKEND=graphdb` или `RDF_BACKEND=fuseki`;
 - для GraphDB задайте `RDF_URL` и `GRAPHDB_REPOSITORY`; для Fuseki задайте `RDF_URL` как URL dataset, например `http://127.0.0.1:3030/Persistent` (сервер добавит `/query`, если его нет в URL);
 - задайте `GRAPH_PREFIX` для RDF-проекции. Для параллельного источника используются GraphDB `http://127.0.0.1:7200/`, repository `bitrix24_v2_parallel` и префикс `urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:`;
-- если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`.
+- если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`;
+- для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
 
 Запустите сервер:
 
