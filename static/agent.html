@@ -34,6 +34,16 @@
 
     <div id="chat-error" class="error-banner" hidden></div>
 
+    <section id="agent-progress" class="agent-progress" aria-label="Ход обработки запроса" hidden>
+      <div class="agent-progress-copy">
+        <span class="agent-progress-label">Текущий этап</span>
+        <span id="agent-progress-stage" role="status" aria-live="polite">Подготавливаю запрос</span>
+      </div>
+      <div class="agent-progress-track" role="progressbar" aria-label="Запрос обрабатывается">
+        <span class="agent-progress-indicator"></span>
+      </div>
+    </section>
+
     <section class="panel agent-panel" aria-labelledby="agent-title">
       <div class="panel-heading">
         <div>

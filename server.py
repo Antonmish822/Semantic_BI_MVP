@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -200,58 +201,165 @@ def _read_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 512 * 1024
         raise ValueError("Некорректный JSON") from exc
 
 
-def _polza_chat(messages: list[dict[str, str]]) -> dict[str, object]:
-    base_url = os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1")
-    api_key = os.environ.get("POLZA_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("Не задан POLZA_API_KEY")
-    url = base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": os.environ.get("POLZA_MODEL", "polza-chat"),
-        "messages": messages,
-        "stream": False,
+PROFILE_LOCK = threading.Lock()
+PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+AGENT_PROGRESS_LOCK = threading.Lock()
+AGENT_PROGRESS: dict[str, dict[str, str]] = {}
+
+
+def set_agent_progress(request_id: str, stage: str, message: str) -> None:
+    with AGENT_PROGRESS_LOCK:
+        if request_id not in AGENT_PROGRESS and len(AGENT_PROGRESS) >= 256:
+            AGENT_PROGRESS.pop(next(iter(AGENT_PROGRESS)))
+        AGENT_PROGRESS[request_id] = {"stage": stage, "message": message}
+
+
+def open_profile_log(component: str):
+    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or ROOT / "logs")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / f"{component}-profile.jsonl"
+    return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))
+
+
+def profile_event(event: str, started: float | None = None, **fields: object) -> bool:
+    record = {
+        "event": event,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        **fields,
     }
-    timeout = float(os.environ.get("POLZA_TIMEOUT", "60"))
-    request = Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
+    if started is not None:
+        record["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
+    component = "mcp" if event in {"mcp_request", "graphdb_select"} else "agent"
+    line = json.dumps(record, separators=(",", ":")) + "\n"
     try:
+        with PROFILE_LOCK, open_profile_log(component) as log:
+            log.write(line)
+    except OSError as exc:
+        print(f"Could not write {component} profile log ({type(exc).__name__})", file=sys.stderr)
+        return False
+    return True
+
+
+def profile_request_id(value: str) -> str:
+    if PROFILE_ID.fullmatch(value):
+        return value.lower()
+    return str(uuid.uuid4())
+
+
+def profile_error(exc: Exception) -> str:
+    cause = exc
+    while isinstance(cause, URLError) and isinstance(cause.reason, Exception):
+        cause = cause.reason
+    return "TimeoutError" if isinstance(cause, TimeoutError) else type(exc).__name__
+
+
+def _polza_chat(messages: list[dict[str, str]], *, request_id: str = "", step: int = 0) -> dict[str, object]:
+    started = time.monotonic()
+    timing = {"request_id": request_id, "stage": "model", "step": step}
+    try:
+        base_url = os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1")
+        api_key = os.environ.get("POLZA_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("Не задан POLZA_API_KEY")
+        payload = {
+            "model": os.environ.get("POLZA_MODEL", "polza-chat"),
+            "messages": messages,
+            "stream": False,
+        }
+        timeout = float(os.environ.get("POLZA_TIMEOUT", "60"))
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        timing["request_bytes"] = len(body)
+        request = Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
         with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            timing["http_status"] = response.status
+            raw = response.read()
+            timing["response_bytes"] = len(raw)
+            result = json.loads(raw.decode("utf-8"))
+        usage = result.get("usage") if isinstance(result, dict) else None
+        if isinstance(usage, dict):
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if type(value) is int and value >= 0:
+                    timing[key] = value
+        timing["outcome"] = "ok"
+        return result
     except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
+        timing.update(outcome="http_error", http_status=exc.code, error_class="HTTPError")
+        with exc:
+            raw = exc.read()
+        timing["response_bytes"] = len(raw)
+        body = raw.decode("utf-8", errors="ignore")
         try:
             details = json.loads(body)
         except json.JSONDecodeError:
             details = {"message": body.strip() or "HTTPError"}
         raise ValueError(f"Polza API error: {details}") from exc
+    except Exception as exc:
+        timing.update(outcome="error", error_class=profile_error(exc))
+        raise
+    finally:
+        profile_event("agent_stage", started, **timing)
 
 
-def _mcp_request(payload: dict[str, object]) -> dict[str, object]:
-    agent_url = os.environ.get("AGENT_MCP_URL", "").strip()
-    if agent_url:
-        url = agent_url.rstrip("/") + "/mcp"
-    else:
-        host = os.environ.get("MCP_HOST", "127.0.0.1")
-        port = int(os.environ.get("MCP_PORT", "8090"))
-        url = f"http://{host}:{port}/mcp"
-    timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
-    request = Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _mcp_request(payload: dict[str, object], *, request_id: str = "", call: int = 0,
+                 tool_name: str | None = None, model_step: int | None = None) -> dict[str, object]:
+    started = time.monotonic()
+    method = payload["method"]
+    timing = {
+        "request_id": request_id, "stage": "mcp", "step": call, "method": method,
+        "tool": tool_name, "model_step": model_step,
+    }
+    try:
+        agent_url = os.environ.get("AGENT_MCP_URL", "").strip()
+        if agent_url:
+            url = agent_url.rstrip("/") + "/mcp"
+        else:
+            host = os.environ.get("MCP_HOST", "127.0.0.1")
+            port = int(os.environ.get("MCP_PORT", "8090"))
+            url = f"http://{host}:{port}/mcp"
+        timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        timing["request_bytes"] = len(body)
+        request = Request(url, data=body, headers={
+            "Content-Type": "application/json", "X-Request-ID": request_id, "X-MCP-Call": str(call),
+        })
+        with urlopen(request, timeout=timeout) as response:
+            timing["http_status"] = response.status
+            raw = response.read()
+            timing["response_bytes"] = len(raw)
+            result = json.loads(raw.decode("utf-8"))
+        rpc_error = result.get("error") if isinstance(result, dict) else None
+        rpc_result = result.get("result") if isinstance(result, dict) else None
+        if isinstance(result, dict) and "error" in result:
+            timing["outcome"] = "jsonrpc_error"
+            code = rpc_error.get("code") if isinstance(rpc_error, dict) else None
+            if type(code) is int:
+                timing["rpc_code"] = code
+        elif not isinstance(rpc_result, dict) or (
+            method == "tools/list" and not isinstance(rpc_result.get("tools"), list)
+        ):
+            timing["outcome"] = "invalid_response"
+        else:
+            timing["outcome"] = "ok"
+            timing["result_bytes"] = len(json.dumps(rpc_result, ensure_ascii=False).encode("utf-8"))
+        return result
+    except HTTPError as exc:
+        timing.update(outcome="http_error", http_status=exc.code, error_class="HTTPError")
+        exc.close()
+        raise
+    except Exception as exc:
+        timing.update(outcome="error", error_class=profile_error(exc))
+        raise
+    finally:
+        profile_event("agent_stage", started, **timing)
 
 
-def _mcp_tools_list() -> list[dict[str, object]]:
-    response = _mcp_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+def _mcp_tools_list(request_id: str = "") -> list[dict[str, object]]:
+    response = _mcp_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, request_id=request_id)
     result = response.get("result") if isinstance(response, dict) else None
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
@@ -267,13 +375,14 @@ def _allowed_agent_tools() -> set[str]:
     return tools
 
 
-def _mcp_tool_call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+def _mcp_tool_call(name: str, arguments: dict[str, object], request_id: str = "", call: int = 0,
+                   model_step: int | None = None) -> dict[str, object]:
     response = _mcp_request({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
-    })
+    }, request_id=request_id, call=call, tool_name=name, model_step=model_step)
     if "error" in response:
         raise ValueError(response["error"].get("message", "Ошибка MCP"))
     result = response.get("result") if isinstance(response, dict) else None
@@ -282,65 +391,121 @@ def _mcp_tool_call(name: str, arguments: dict[str, object]) -> dict[str, object]
     return result
 
 
-def _agent_system_prompt(tools: list[dict[str, object]]) -> str:
+def _agent_system_prompt(
+    tools: list[dict[str, object]], catalog: list[dict[str, object]],
+) -> str:
     base_prompt = os.environ.get(
         "AGENT_SYSTEM_PROMPT",
         "Ты — аналитический ассистент Semantic BI. "
-        "Отвечай по-русски. Для любых вопросов о данных ОБЯЗАТЕЛЬНО вызывай MCP-инструменты. "
+        "Отвечай по-русски. Для ответов о данных обязательно используй MCP-инструменты. "
+        "Если нужно уточнение, задай вопрос без вызова инструмента. "
         "Запрещено сочинять SPARQL, префиксы или обращаться к графу без MCP. "
-        "Сначала запроси список доступных шаблонов (list_queries), затем запускай run_named_query. "
         "Если не хватает понимания схемы — используй explain_schema. "
         "Чтобы вызвать инструмент, ответь ТОЛЬКО JSON без пояснений: "
         "{\"tool_call\":{\"name\":\"<tool>\",\"arguments\":{...}}}. "
         "НЕ используй формат <invoke ...> и НЕ добавляй обычный текст.",
     )
-    tools_hint = "\nДоступные инструменты:\n" + "\n".join(
-        f"- {tool.get('name')}: {tool.get('description', '')}" for tool in tools
+    tools_hint = "\nДоступные инструменты и схемы аргументов:\n" + json.dumps(
+        tools, ensure_ascii=False, separators=(",", ":"),
     )
-    return base_prompt + tools_hint
+    named_query_hint = (
+        "\nАгент уже получил актуальный каталог из MCP через list_queries. "
+        "Используй его для выбора шаблона и для ответов о доступных шаблонах. "
+        "Для run_named_query определи, какие данные нужны пользователю, и выбери шаблон "
+        "по описанию и параметрам из этого каталога. Учитывай контекст диалога. "
+        "Копируй точный идентификатор шаблона в arguments.name. "
+        "Внешнее name обозначает инструмент. arguments.parameters можно опустить, "
+        "если шаблону не нужны параметры. Не выдумывай шаблон и не подставляй вместо него "
+        "текст вопроса. Если выбор неоднозначен и данных недостаточно, уточни запрос. "
+        'Формат: {"tool_call":{"name":"run_named_query","arguments":{"name":"<имя из каталога>"}}}.'
+        "\nАктуальный каталог MCP:\n"
+        "\nФинальный ответ пользователю оформляй в Markdown: короткий вывод, заголовки "
+        "для разделов, списки для перечислений и таблицы для сопоставлений. "
+        "Не используй HTML. Вызовы инструментов по-прежнему возвращай только JSON."
+    )
+    return base_prompt + tools_hint + named_query_hint + json.dumps(catalog, ensure_ascii=False)
+
+
+def _read_named_query_catalog(result: dict[str, object]) -> list[dict[str, object]]:
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            raw = item.get("text")
+            if not isinstance(raw, str):
+                continue
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                continue
+            queries = payload.get("queries") if isinstance(payload, dict) else None
+            if isinstance(queries, list) and all(
+                isinstance(query, dict)
+                and isinstance(query.get("name"), str)
+                and bool(query["name"].strip())
+                and isinstance(query.get("description"), str)
+                for query in queries
+            ):
+                return queries
+    raise ValueError("MCP вернул некорректный каталог именованных запросов")
+
+
+def _named_query_argument_error(arguments: dict[str, object], catalog: set[str]) -> str | None:
+    if "name" not in arguments:
+        return "missing_name"
+    name = arguments["name"]
+    if not isinstance(name, str):
+        return "invalid_name_type"
+    if not name:
+        return "empty_name"
+    if name not in catalog:
+        return "unknown_template"
+    if "parameters" in arguments and not isinstance(arguments["parameters"], dict):
+        return "invalid_parameters_type"
+    return None
 
 
 def _extract_tool_call(content: str) -> dict[str, object] | None:
     def normalize_call(payload: object) -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
-        tool_call = payload.get("tool_call")
-        if isinstance(tool_call, dict):
-            tool_name = tool_call.get("name") or tool_call.get("tool")
-            if isinstance(tool_name, str):
-                arguments = tool_call.get("arguments") or tool_call.get("args") or {}
-                return {"name": tool_name, "arguments": arguments if isinstance(arguments, dict) else {}}
+        wrapped = payload.get("tool_call")
+        if not isinstance(wrapped, dict):
+            wrapped = payload.get("tool")
+        if isinstance(wrapped, dict):
+            payload = wrapped
 
         name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
-        arguments: dict[str, object] | None = None
-        if isinstance(payload.get("tool"), dict):
-            nested = payload.get("tool")
-            if isinstance(nested, dict):
-                name = nested.get("name") or nested.get("tool") or name
-                arguments = nested.get("arguments") if isinstance(nested.get("arguments"), dict) else None
-                if arguments is None and isinstance(nested.get("params"), dict):
-                    arguments = nested.get("params")
-        if isinstance(payload.get("arguments"), dict):
-            arguments = payload.get("arguments")
-        if isinstance(payload.get("params"), dict):
-            arguments = payload.get("params")
+        if not isinstance(name, str):
+            return None
+        arguments = {}
+        for key in ("arguments", "args", "params"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                arguments = value.copy()
+                break
+
         if name == "sparql_select" and isinstance(payload.get("query"), str):
-            arguments = {"query": payload.get("query")}
+            arguments["query"] = payload["query"]
         if name == "run_named_query":
-            if isinstance(payload.get("parameters"), dict):
-                arguments = {"parameters": payload.get("parameters")}
-            elif isinstance(payload.get("params"), dict):
-                arguments = payload.get("params")
-            elif isinstance(payload.get("query_name"), str):
-                arguments = {"name": payload.get("query_name")}
-        if isinstance(name, str):
-            if name == "run_named_query" and isinstance(arguments, dict):
-                if "query_name" in arguments and "name" not in arguments:
-                    arguments["name"] = arguments.pop("query_name")
-                if "params" in arguments and "parameters" not in arguments:
-                    arguments["parameters"] = arguments.pop("params")
-            return {"name": name, "arguments": arguments if isinstance(arguments, dict) else {}}
-        return None
+            aliases = ("query_name", "template_name", "template")
+            if "name" not in arguments:
+                for source in (arguments, payload):
+                    alias = next((key for key in aliases if key in source), None)
+                    if alias is not None:
+                        arguments["name"] = source[alias]
+                        break
+            if isinstance(arguments.get("name"), str):
+                arguments["name"] = arguments["name"].strip()
+            if "parameters" not in arguments:
+                if "params" in arguments:
+                    arguments["parameters"] = arguments["params"]
+                elif "parameters" in payload:
+                    arguments["parameters"] = payload["parameters"]
+            for key in (*aliases, "params"):
+                arguments.pop(key, None)
+        return {"name": name, "arguments": arguments}
 
     def iter_json_objects(text: str) -> list[str]:
         objects: list[str] = []
@@ -424,7 +589,7 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
                 arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": name, "arguments": arguments}
+        return normalize_call({"name": name, "arguments": arguments})
 
     tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
     if tool_tag:
@@ -438,7 +603,7 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": name, "arguments": arguments}
+        return normalize_call({"name": name, "arguments": arguments})
 
     for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
         tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
@@ -455,7 +620,7 @@ def _extract_tool_call(content: str) -> dict[str, object] | None:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        return {"name": tag, "arguments": arguments}
+        return normalize_call({"name": tag, "arguments": arguments})
 
     to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
     if to_match:
@@ -1535,19 +1700,75 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "Не удалось получить адаптивное состояние вида",
                 })
                 self.log_error("CRM view-state query failed (%s)", type(exc).__name__)
+        elif path == "/api/agent/progress":
+            request_id = parse_qs(urlsplit(self.path).query).get("request_id", [""])[0]
+            if not PROFILE_ID.fullmatch(request_id):
+                self._send_json(400, {"error": "Некорректный request_id"})
+                return
+            with AGENT_PROGRESS_LOCK:
+                progress = AGENT_PROGRESS.get(request_id.lower())
+            if progress is None:
+                self._send_json(404, {"error": "Запрос не найден"})
+            else:
+                self._send_json(200, progress)
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
+    def _record_browser_profile(self) -> None:
+        try:
+            if self.headers.get_content_type() != "application/json":
+                raise ValueError
+            payload = _read_json_body(self, max_bytes=1024)
+            if not isinstance(payload, dict):
+                raise ValueError
+            request_id = payload.get("request_id")
+            duration = payload.get("duration_ms")
+            status = payload.get("http_status")
+            outcome = payload.get("outcome")
+            error_class = payload.get("error_class")
+            if not isinstance(request_id, str) or not PROFILE_ID.fullmatch(request_id):
+                raise ValueError
+            if type(duration) not in (int, float) or not 0 <= duration <= 86_400_000:
+                raise ValueError
+            if status is not None and (type(status) is not int or not 100 <= status <= 599):
+                raise ValueError
+            if outcome == "ok":
+                if error_class is not None or status is None or not 200 <= status <= 299:
+                    raise ValueError
+            elif outcome != "error" or error_class not in ("network", "http", "json", "render"):
+                raise ValueError
+        except (ValueError, UnicodeError):
+            self._send(400, b"", "text/plain")
+            return
+
+        saved = profile_event(
+            "agent_browser", request_id=request_id.lower(), duration_ms=round(duration, 2),
+            http_status=status, outcome=outcome, error_class=error_class,
+        )
+        self._send(204 if saved else 503, b"", "text/plain")
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/api/agent/profile":
+            self._record_browser_profile()
+            return
         if path != "/api/agent":
             self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
             return
+        request_id = profile_request_id(self.headers.get("X-Request-ID", ""))
+        set_agent_progress(request_id, "starting", "Подготавливаю запрос")
+        request_started = time.monotonic()
+        model_calls = mcp_calls = history_count = context_bytes = response_bytes = 0
+        outcome = "error"
+        http_status = request_bytes = error_class = reply_kind = None
         try:
+            request_bytes = int(self.headers.get("Content-Length", "0"))
             payload = _read_json_body(self)
             message = str(payload.get("message") or "").strip()
             if not message:
-                self._send_json(400, {"error": "Поле message обязательно"})
+                outcome = "invalid_request"
+                http_status = 400
+                response_bytes = self._send_agent_json(http_status, {"error": "Поле message обязательно"}, request_id)
                 return
             history = _sanitize_history(payload.get("history"))
             session_id = payload.get("session_id")
@@ -1560,35 +1781,114 @@ class Handler(BaseHTTPRequestHandler):
             max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
             history = history[-max_history:]
 
+            history_count = len(history)
             allowed_tools = _allowed_agent_tools()
-            tools = [tool for tool in _mcp_tools_list() if tool.get("name") in allowed_tools]
-            system_prompt = _agent_system_prompt(tools)
+            set_agent_progress(request_id, "tools", "Получаю список инструментов")
+            mcp_calls += 1
+            tools = [tool for tool in _mcp_tools_list(request_id) if tool.get("name") in allowed_tools]
+            catalog: list[dict[str, object]] = []
+            catalog_result = None
+            if any(tool.get("name") == "run_named_query" for tool in tools):
+                set_agent_progress(request_id, "catalog", "Загружаю актуальный каталог запросов")
+                mcp_calls += 1
+                catalog_result = _mcp_tool_call("list_queries", {}, request_id, mcp_calls - 1)
+                catalog = _read_named_query_catalog(catalog_result)
+            template_names = {query["name"] for query in catalog}
+            system_prompt = _agent_system_prompt(tools, catalog)
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(history)
             messages.append({"role": "user", "content": message})
+            context_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
 
-            def request_tool_call() -> tuple[str, dict[str, object] | None]:
-                response = _polza_chat(messages)
-                raw = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-                content_local = raw if isinstance(raw, str) else ""
-                call = _extract_tool_call(content_local)
-                if call and call.get("name") not in allowed_tools:
-                    call = None
-                return content_local, call
+            def request_tool_call() -> tuple[str, dict[str, object] | None, str, str | None]:
+                nonlocal model_calls
+                model_calls += 1
+                set_agent_progress(request_id, "model", "Анализирую запрос и подбираю данные")
+                response = _polza_chat(messages, request_id=request_id, step=model_calls)
+                try:
+                    model_message = response.get("choices", [{}])[0].get("message", {})
+                    raw = model_message.get("content", "")
+                    content_local = raw if isinstance(raw, str) else ""
+                    call = _extract_tool_call(content_local)
+                except Exception as exc:
+                    profile_event(
+                        "agent_model_result", request_id=request_id, step=model_calls,
+                        result_kind="invalid_response", error_class=profile_error(exc),
+                    )
+                    raise
+                argument_error = None
+                result_kind = "final_text" if content_local else "empty"
+                if call:
+                    result_kind = "tool_call"
+                    if call.get("name") not in allowed_tools:
+                        result_kind = "disallowed_tool_call"
+                        call = None
+                    elif call["name"] == "run_named_query":
+                        argument_error = _named_query_argument_error(call["arguments"], template_names)
+                        if argument_error:
+                            result_kind = "invalid_tool_arguments"
+                            call = None
+                elif model_message.get("tool_calls") or model_message.get("function_call"):
+                    result_kind = "native_tool_call"
+                elif re.match(r'^\s*(?:```(?:json)?\s*)?(?:\{\s*"tool_call"\s*:|<tool_call\b|<invoke\b)', content_local):
+                    result_kind = "malformed_tool_call"
+                needs_repair = result_kind in {
+                    "invalid_tool_arguments", "malformed_tool_call", "native_tool_call",
+                    "disallowed_tool_call",
+                }
+                retry = model_calls < max_steps and not repair_attempted and (
+                    needs_repair or (not call and tool_steps == 0)
+                )
+                action = None
+                if needs_repair:
+                    action = "repair" if retry else "reject"
+                profile_event(
+                    "agent_model_result", request_id=request_id, step=model_calls,
+                    result_kind=result_kind, argument_error=argument_error, retry=retry,
+                )
+                return content_local, call, result_kind, action
 
             max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
             tool_steps = 0
+            repair_attempted = False
             content = ""
             last_tool: dict[str, object] | None = None
             last_tool_result: dict[str, object] | None = None
             for _ in range(max_steps):
-                content, tool_call = request_tool_call()
+                content, tool_call, reply_kind, action = request_tool_call()
+                if action == "reject":
+                    raise ValueError("Агент не смог сформировать корректный вызов инструмента. Уточните запрос.")
+                if action == "repair":
+                    repair_attempted = True
+                    messages.append({
+                        "role": "system",
+                        "content": "Предыдущий вызов инструмента отклонён и не выполнен. "
+                                   "Выбери инструмент по последнему запросу пользователя и верни корректный JSON. "
+                                   "Для run_named_query укажи точное имя шаблона из каталога в arguments.name. "
+                                   "arguments.parameters должен быть объектом, если он нужен. "
+                                   "Если подходящий шаблон неясен, задай уточняющий вопрос.",
+                    })
+                    continue
                 if tool_call:
                     tool_name = str(tool_call["name"])
+                    progress_messages = {
+                        "list_queries": ("catalog", "Получаю актуальный каталог запросов"),
+                        "explain_schema": ("schema", "Проверяю структуру данных"),
+                        "run_named_query": ("query", "Запрашиваю данные из GraphDB"),
+                        "sparql_select": ("query", "Выполняю выборку в GraphDB"),
+                    }
+                    stage, progress_message = progress_messages.get(
+                        tool_name, ("tool", "Выполняю шаг обработки данных"),
+                    )
+                    set_agent_progress(request_id, stage, progress_message)
                     last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
-                    if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
-                        print(f"Agent tool call: {tool_name} {json.dumps(tool_call['arguments'], ensure_ascii=False)}")
-                    tool_result = _mcp_tool_call(tool_name, tool_call["arguments"])
+                    if tool_name == "list_queries" and catalog_result is not None:
+                        tool_result = catalog_result
+                    else:
+                        mcp_calls += 1
+                        tool_result = _mcp_tool_call(
+                            tool_name, tool_call["arguments"], request_id, mcp_calls - 1, model_calls,
+                        )
                     last_tool_result = tool_result
                     tool_steps += 1
                     messages.append({"role": "assistant", "content": content})
@@ -1605,7 +1905,8 @@ class Handler(BaseHTTPRequestHandler):
                     })
                     continue
 
-                if tool_steps == 0:
+                if tool_steps == 0 and not repair_attempted:
+                    set_agent_progress(request_id, "model", "Уточняю способ получения данных")
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "system",
@@ -1617,11 +1918,11 @@ class Handler(BaseHTTPRequestHandler):
 
                 break
 
+            if reply_kind == "tool_call":
+                raise ValueError("Агент исчерпал лимит шагов до формирования ответа.")
             if tool_steps == 0:
                 if not content:
                     raise ValueError("Агент не смог сформировать ответ")
-                if os.environ.get("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
-                    print("Agent reply without MCP tool call")
             if not content:
                 raise ValueError("Агент не смог сформировать финальный ответ после MCP")
 
@@ -1632,20 +1933,50 @@ class Handler(BaseHTTPRequestHandler):
             new_history = new_history[-max_history:]
             with AGENT_SESSIONS_LOCK:
                 AGENT_SESSIONS[session_id] = new_history
-            response_payload = {"session_id": session_id, "reply": content, "history": new_history}
+            response_payload = {"session_id": session_id, "reply": content, "history": new_history, "request_id": request_id}
             if last_tool:
                 response_payload["tool"] = last_tool
             if last_tool_result is not None:
                 response_payload["tool_result"] = last_tool_result
-            self._send_json(200, response_payload)
+            http_status = 200
+            response_bytes = self._send_agent_json(http_status, response_payload, request_id)
+            outcome = "ok"
+            set_agent_progress(request_id, "done", "Ответ готов")
         except (HTTPError, URLError, TimeoutError) as exc:
-            self._send_json(502, {"error": "Не удалось связаться с агентом или MCP"})
-            self.log_error("Agent backend error (%s)", type(exc).__name__)
+            outcome = "transport_error"
+            error_class = profile_error(exc)
+            http_status = 502
+            response_bytes = self._send_agent_json(
+                http_status, {"error": "Не удалось связаться с агентом или MCP"}, request_id,
+            )
+            set_agent_progress(request_id, "error", "Не удалось завершить запрос")
         except ValueError as exc:
-            self._send_json(400, {"error": str(exc)})
+            outcome = "value_error"
+            error_class = profile_error(exc)
+            http_status = 400
+            response_bytes = self._send_agent_json(http_status, {"error": str(exc)}, request_id)
+            set_agent_progress(request_id, "error", "Не удалось обработать запрос")
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            outcome = "client_disconnected"
+            error_class = profile_error(exc)
         except Exception as exc:  # noqa: BLE001
-            self._send_json(500, {"error": "Внутренняя ошибка агента"})
-            self.log_error("Agent error (%s)", type(exc).__name__)
+            outcome = "internal_error"
+            error_class = profile_error(exc)
+            http_status = 500
+            response_bytes = self._send_agent_json(http_status, {"error": "Внутренняя ошибка агента"}, request_id)
+            set_agent_progress(request_id, "error", "Произошла внутренняя ошибка")
+        finally:
+            profile_event(
+                "agent_request", request_started, request_id=request_id, outcome=outcome,
+                http_status=http_status, error_class=error_class, reply_kind=reply_kind,
+                model_calls=model_calls, mcp_calls=mcp_calls, history_messages=history_count,
+                context_bytes=context_bytes, request_bytes=request_bytes, response_bytes=response_bytes,
+            )
+
+    def _send_agent_json(self, status: int, payload: object, request_id: str) -> int:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send(status, body, "application/json; charset=utf-8", request_id=request_id)
+        return len(body)
 
     def do_PUT(self) -> None:  # noqa: N802
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
@@ -1660,21 +1991,33 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8")
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
         self.end_headers()
         self.wfile.write(body)
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"{self.log_date_time_string()} {self.address_string()} {fmt % args}")
 
+    def handle_error(self) -> None:
+        error_type, _, _ = sys.exc_info()
+        if error_type and issubclass(
+            error_type, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError),
+        ):
+            return
+        super().handle_error()
+
 
 def main() -> None:
     load_env()
+    with open_profile_log("agent") as log:
+        print(f"Agent profile log: {log.name}")
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8082"))
     server = ThreadingHTTPServer((host, port), Handler)

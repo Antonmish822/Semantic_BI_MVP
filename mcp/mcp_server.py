@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .mcp_queries import list_named_queries, render_named_query
+from .mcp_queries import NAMED_QUERIES, list_named_queries, render_named_query
 from .mcp_schema import load_schema_summary
 from .mcp_security import SparqlValidationError, enforce_limit, ensure_select_only
-from server import create_store_client, load_env
+from server import create_store_client, load_env, open_profile_log, profile_error, profile_event, profile_request_id
+
+METHODS = {
+    "initialize", "notifications/initialized", "ping", "tools/list", "tools/call",
+    "resources/list", "resources/templates/list", "prompts/list",
+}
+TOOLS = {"sparql_select", "list_queries", "run_named_query", "explain_schema"}
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -31,12 +38,12 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise JsonRpcError("Некорректный JSON", -32700) from exc
 
 
-def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+def _json_response(handler: BaseHTTPRequestHandler, body: bytes, request_id: str) -> None:
     handler.send_response(200)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Request-ID", request_id)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -65,7 +72,7 @@ def _tool_schemas() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Имя шаблона"},
+                    "name": {"type": "string", "description": "Имя шаблона из каталога list_queries"},
                     "parameters": {
                         "type": "object",
                         "description": "Параметры шаблона",
@@ -94,7 +101,26 @@ def _format_content(data: Any) -> dict[str, Any]:
     }
 
 
-def _handle_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _select(store, query: str, **tags: Any) -> tuple[list, float]:
+    started = time.monotonic()
+    try:
+        bindings = store.select(query)
+    except Exception as exc:
+        profile_event("graphdb_select", started, **tags, outcome="error", error_class=profile_error(exc))
+        raise
+    elapsed = time.monotonic() - started
+    return bindings, elapsed
+
+
+def _log_select(tags: dict[str, Any], elapsed: float, bindings: list, result_bytes: int) -> None:
+    profile_event(
+        "graphdb_select", **tags, duration_ms=round(elapsed * 1000, 2),
+        outcome="ok", rows=len(bindings), result_bytes=result_bytes,
+    )
+
+
+def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = "", call: int = 0) -> dict[str, Any]:
+    tags = {"request_id": request_id, "step": call, "tool": name}
     if name == "sparql_select":
         query = str(arguments.get("query") or "")
         if not query:
@@ -103,12 +129,12 @@ def _handle_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         max_rows = int(os.environ.get("MCP_MAX_ROWS", "500"))
         query = enforce_limit(query, max_rows)
         store = create_store_client()
-        started_at = time.monotonic()
-        bindings = store.select(query)
-        elapsed = time.monotonic() - started_at
+        bindings, elapsed = _select(store, query, **tags)
         max_bytes = int(os.environ.get("MCP_MAX_RESPONSE_BYTES", "1000000"))
         payload = {"bindings": bindings, "elapsed_seconds": round(elapsed, 3)}
-        if len(json.dumps(payload, ensure_ascii=False)) > max_bytes:
+        encoded = json.dumps(payload, ensure_ascii=False)
+        _log_select(tags, elapsed, bindings, len(encoded.encode("utf-8")))
+        if len(encoded) > max_bytes:
             raise JsonRpcError("Ответ превышает допустимый размер", -32001)
         return _format_content(payload)
 
@@ -117,6 +143,7 @@ def _handle_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
     if name == "run_named_query":
         template = str(arguments.get("name") or "")
+        tags["template"] = template if template in NAMED_QUERIES else "unknown"
         params = arguments.get("parameters")
         if not template:
             raise JsonRpcError("Параметр name обязателен", -32602)
@@ -125,9 +152,10 @@ def _handle_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         ensure_select_only(query)
         max_rows = int(os.environ.get("MCP_MAX_ROWS", "500"))
         query = enforce_limit(query, max_rows)
-        bindings = store.select(query)
-        payload = {"bindings": bindings}
-        return _format_content(payload)
+        bindings, elapsed = _select(store, query, **tags)
+        result = _format_content({"bindings": bindings})
+        _log_select(tags, elapsed, bindings, len(result["content"][0]["text"].encode("utf-8")))
+        return result
 
     if name == "explain_schema":
         return _format_content(load_schema_summary())
@@ -143,12 +171,21 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        started = time.monotonic()
+        request_id = profile_request_id(self.headers.get("X-Request-ID", ""))
+        call_header = self.headers.get("X-MCP-Call", "")
+        call = int(call_header) if re.fullmatch(r"[0-9]{1,9}", call_header) else 0
+        req_id = None
+        timing = {"request_id": request_id, "step": call, "method": "unknown"}
         try:
+            timing["request_bytes"] = int(self.headers.get("Content-Length", "0"))
             payload = _read_json(self)
+            if not isinstance(payload, dict):
+                raise JsonRpcError("Некорректный JSON-RPC запрос", -32600)
             method = payload.get("method")
             req_id = payload.get("id")
-            if os.environ.get("MCP_DEBUG", "0").strip().lower() in {"1", "true", "yes"}:
-                print(f"MCP request: {json.dumps(payload, ensure_ascii=False)}")
+            if isinstance(method, str) and method in METHODS:
+                timing["method"] = method
             if method == "initialize":
                 result = {
                     "protocolVersion": "2024-11-05",
@@ -167,7 +204,11 @@ class MCPHandler(BaseHTTPRequestHandler):
                 arguments = params.get("arguments") or {}
                 if not tool_name:
                     raise JsonRpcError("Не указан инструмент", -32602)
-                result = _handle_tool_call(str(tool_name), arguments)
+                timing["tool"] = tool_name if isinstance(tool_name, str) and tool_name in TOOLS else "unknown"
+                if tool_name == "run_named_query" and isinstance(arguments, dict):
+                    template = arguments.get("name")
+                    timing["template"] = template if isinstance(template, str) and template in NAMED_QUERIES else "unknown"
+                result = _handle_tool_call(str(tool_name), arguments, request_id, call)
             elif method == "resources/list":
                 result = {"resources": []}
             elif method == "resources/templates/list":
@@ -177,16 +218,25 @@ class MCPHandler(BaseHTTPRequestHandler):
             else:
                 raise JsonRpcError("Метод не поддерживается", -32601)
             response = {"jsonrpc": "2.0", "id": req_id, "result": result}
-        except SparqlValidationError as exc:
-            response = {"jsonrpc": "2.0", "id": payload.get("id") if isinstance(payload, dict) else None,
-                        "error": {"code": -32002, "message": str(exc)}}
-        except JsonRpcError as exc:
-            response = {"jsonrpc": "2.0", "id": payload.get("id") if isinstance(payload, dict) else None,
-                        "error": {"code": exc.code, "message": str(exc)}}
-        except Exception as exc:  # noqa: BLE001
-            response = {"jsonrpc": "2.0", "id": payload.get("id") if isinstance(payload, dict) else None,
-                        "error": {"code": -32099, "message": f"Внутренняя ошибка: {exc}"}}
-        _json_response(self, response)
+        except Exception as exc:
+            if isinstance(exc, SparqlValidationError):
+                code, message = -32002, str(exc)
+            elif isinstance(exc, JsonRpcError):
+                code, message = exc.code, str(exc)
+            else:
+                code, message = -32099, f"Внутренняя ошибка: {exc}"
+            timing.update(outcome="jsonrpc_error", rpc_code=code, error_class=profile_error(exc))
+            response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+        else:
+            timing.update(outcome="ok", result_bytes=len(json.dumps(result, ensure_ascii=False).encode("utf-8")))
+        body = json.dumps(response, ensure_ascii=False).encode("utf-8")
+        timing.update(http_status=200, response_bytes=len(body))
+        try:
+            _json_response(self, body, request_id)
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            timing["write_error_class"] = profile_error(exc)
+        finally:
+            profile_event("mcp_request", started, **timing)
 
     def do_GET(self) -> None:  # noqa: N802
         self.send_response(404)
@@ -198,6 +248,8 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     load_env()
+    with open_profile_log("mcp") as log:
+        print(f"MCP profile log: {log.name}")
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8090"))
     server = ThreadingHTTPServer((host, port), MCPHandler)

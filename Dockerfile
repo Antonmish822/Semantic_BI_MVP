@@ -10,7 +10,8 @@ COPY queries ./queries
 COPY docs ./docs
 COPY static ./static
 
-RUN useradd --system --uid 10001 --no-create-home appuser
+RUN useradd --system --uid 10001 --no-create-home appuser \
+    && install -d -o 10001 -g "$(id -g appuser)" -m 0700 /app/logs
 USER 10001:10001
 
 EXPOSE 8082
