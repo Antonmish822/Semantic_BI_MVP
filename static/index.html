@@ -37,7 +37,6 @@
       <a class="active" href="/">Пульс сделок</a>
       <a href="/leads">Пульс лидов</a>
       <a href="/employees">Сотрудники</a>
-      <a href="/agent">AI Agent</a>
     </nav>
 
     <div id="error" class="error-banner" hidden></div>
@@ -159,6 +158,63 @@
       <span>Активность считается по дате создания записи CRM Activity.</span>
     </footer>
   </main>
+
+  <button id="agent-open" class="agent-launcher" type="button" aria-expanded="false" aria-controls="agent-drawer">
+    <span>AI Agent</span>
+  </button>
+
+  <div id="agent-drawer" class="agent-drawer" aria-hidden="true" hidden>
+    <div id="agent-backdrop" class="agent-drawer__backdrop" tabindex="-1" aria-hidden="true"></div>
+    <div class="agent-drawer__panel" role="dialog" aria-modal="false" aria-labelledby="agent-drawer-title">
+      <div class="agent-drawer__header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">P</div>
+          <div>
+            <p class="eyebrow">SEMANTIC BI · BITRIX24</p>
+            <h2 id="agent-drawer-title">AI Agent</h2>
+          </div>
+        </div>
+        <div class="agent-drawer__actions">
+          <span id="agent-status" class="connection pending"><i></i><span>Ожидание…</span></span>
+          <button id="chat-reset" class="secondary-button" type="button" aria-label="Сбросить чат">
+            Сбросить чат
+          </button>
+          <button id="agent-close" class="agent-drawer__close" type="button" aria-label="Закрыть панель">×</button>
+        </div>
+      </div>
+
+      <section id="agent-progress" class="agent-progress" aria-label="Ход обработки запроса" hidden>
+        <div class="agent-progress-copy">
+          <span class="agent-progress-label">Текущий этап</span>
+          <span id="agent-progress-stage" role="status" aria-live="polite">Подготавливаю запрос</span>
+        </div>
+        <div class="agent-progress-track" role="progressbar" aria-label="Запрос обрабатывается">
+          <span class="agent-progress-indicator"></span>
+        </div>
+      </section>
+
+      <section class="panel agent-panel" aria-labelledby="agent-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">ЧАТ С СЕМАНТИЧЕСКИМ BI</p>
+            <h2 id="agent-title">Спросите о сделках, лидах и сотрудниках</h2>
+            <p class="panel-subtitle">Агент использует MCP-инструменты для выборок из RDF-хранилища.</p>
+          </div>
+        </div>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <textarea id="chat-input" class="chat-input" rows="3" placeholder="Например: Покажи топ-5 категорий по активным сделкам" required></textarea>
+          <div class="chat-actions">
+            <span id="chat-hint" class="panel-subtitle">Enter — отправить, Shift+Enter — новая строка.</span>
+            <button id="chat-send" class="refresh" type="submit">Отправить</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </div>
+
   <script src="/app.js" defer></script>
+  <script src="/vendor/xlsx.full.min.js" defer></script>
+  <script src="/agent.js" defer></script>
 </body>
 </html>

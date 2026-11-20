@@ -8,6 +8,42 @@ const chatReset = byId('chat-reset');
 const agentStatus = byId('agent-status');
 const agentProgress = byId('agent-progress');
 const agentProgressStage = byId('agent-progress-stage');
+
+// Drawer controls (общие для всех страниц)
+const agentDrawer = byId('agent-drawer');
+const agentOpen = byId('agent-open');
+const agentClose = byId('agent-close');
+const agentBackdrop = byId('agent-backdrop');
+
+function setAgentDrawer(open) {
+  if (!agentDrawer || !agentOpen) return;
+  agentDrawer.classList.toggle('is-open', open);
+  if (open) {
+    agentDrawer.removeAttribute('hidden');
+    agentDrawer.setAttribute('aria-hidden', 'false');
+    agentOpen.setAttribute('aria-expanded', 'true');
+    document.body.classList.add('agent-open');
+  } else {
+    agentDrawer.classList.remove('is-open');
+    agentDrawer.setAttribute('hidden', '');
+    agentDrawer.setAttribute('aria-hidden', 'true');
+    agentOpen.setAttribute('aria-expanded', 'false');
+    document.body.classList.remove('agent-open');
+  }
+}
+
+function toggleAgentDrawer() {
+  if (!agentDrawer || !agentOpen) return;
+  setAgentDrawer(!agentDrawer.classList.contains('is-open'));
+}
+
+if (agentOpen && agentDrawer) agentOpen.addEventListener('click', toggleAgentDrawer);
+if (agentClose) agentClose.addEventListener('click', () => setAgentDrawer(false));
+if (agentBackdrop) agentBackdrop.addEventListener('click', () => setAgentDrawer(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setAgentDrawer(false);
+});
+
 let sessionId = sessionStorage.getItem('agentSessionId');
 let history = readStoredMessages('agentHistory');
 let transcript = readStoredMessages('agentTranscript');
