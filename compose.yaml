@@ -12,13 +12,20 @@ services:
       - profile_logs:/app/logs
       - ./ontologies:/app/ontologies:rw
     env_file:
-      - .env
+      - ${CRM_MONITOR_ENV_FILE:-.env}
     environment:
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: "8088"
-      RDF_URL: ${RDF_URL_DOCKER:-http://host.docker.internal:7200}
+      AGENT_MCP_URL: http://mcp-graphdb:8090
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
     ports:
       - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
+    depends_on:
+      - mcp-graphdb
+    group_add:
+      - "${CRM_MONITOR_GID:-1000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - rdf_store
 
@@ -34,14 +41,16 @@ services:
     volumes:
       - profile_logs:/app/logs
     env_file:
-      - .env
+      - ${CRM_MONITOR_ENV_FILE:-.env}
     environment:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8090"
-      RDF_URL: ${RDF_URL_DOCKER:-http://host.docker.internal:7200}
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
     command: ["python", "-m", "mcp.mcp_server"]
     ports:
       - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - rdf_store
 

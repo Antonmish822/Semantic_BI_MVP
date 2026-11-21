@@ -69,11 +69,24 @@ python server.py
 
 ## Запуск в Docker Compose
 
-Compose подключает `./ontologies` как постоянный том с записью и запускает процесс под UID 10001. На Linux настройте POSIX ACL для этого UID, сохранив владение за хост-пользователем (команды приведены в [руководстве по онтологиям](ontologies/README.md)). Контейнер подключается к существующей внешней Docker-сети GraphDB и публикует дашборд только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, а порт хоста — `8088`.
+Compose собирает образ с зависимостями из `uv.lock`, запускает dashboard и MCP-сервер, подключает `./ontologies` как постоянный том с записью и запускает процессы под UID 10001. Dashboard обращается к MCP по адресу `http://mcp-graphdb:8090` внутри Docker-сети. Для сохранения TTL из контейнера каталог `ontologies/` должен быть доступен группе хоста; настройка приведена в [руководстве по онтологиям](ontologies/README.md). Контейнеры подключаются к существующей внешней Docker-сети GraphDB; по умолчанию сеть называется `graphdb_default`, сервис GraphDB — `graphdb`, адрес — `http://graphdb:7200`. Порт dashboard на хосте по умолчанию — `8088`, доступен только на loopback.
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+CRM_MONITOR_GID="$(id -g)" docker compose up -d --build
+```
+
+Если настройки уже находятся в `.env.ai-agent`, используйте этот файл вместо `.env`:
+
+```bash
+chmod g+rwx,g+s ontologies
+CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent docker compose up -d --build
+```
+
+Если GraphDB доступна на хосте по опубликованному порту `7200`, укажите адрес хоста, доступный из контейнера:
+
+```bash
+CRM_MONITOR_GID="$(id -g)" RDF_URL_DOCKER=http://host.docker.internal:7200 CRM_MONITOR_ENV_FILE=.env.ai-agent docker compose up -d --build
 ```
 
 Откройте <http://127.0.0.1:8088>. Если Docker-сеть GraphDB называется иначе, задайте `RDF_DOCKER_NETWORK`, например:
@@ -82,7 +95,7 @@ docker compose up -d --build
 RDF_DOCKER_NETWORK=my_graphdb_network docker compose up -d --build
 ```
 
-Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для публикации на другом loopback-порту задайте `CRM_PULSE_MONITOR_PORT`, например `CRM_PULSE_MONITOR_PORT=8092`; контейнер по-прежнему слушает порт 8088. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
+Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для публикации MCP на другом loopback-порту задайте `MCP_SERVER_PORT`, например `MCP_SERVER_PORT=8091`; агент внутри сети продолжит обращаться к контейнерному порту 8090. Для dashboard задайте `CRM_PULSE_MONITOR_PORT`, например `CRM_PULSE_MONITOR_PORT=8092`; контейнер по-прежнему слушает порт 8088. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
 
 Compose запускает контейнер с read-only корневой файловой системой и временным `/tmp`. Остановить сервис:
 
