@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Онтологии — CRM Pulse</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark" aria-hidden="true">P</div><div><p class="eyebrow">SEMANTIC BI · BITRIX24</p><h1>CRM Pulse</h1></div></div>
+    <div class="header-actions ontology-auth">
+      <label class="team-filter"><span>Токен администратора</span><input id="admin-token" type="password" autocomplete="off" placeholder="Сохраняется в этом браузере"></label>
+      <button id="auth-check" class="secondary-button" type="button">Проверить доступ</button>
+    </div>
+  </header>
+  <nav class="page-nav" aria-label="Страницы дашборда"><a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a><a href="/agent">AI Agent</a><a class="active" href="/ontologies">Онтологии</a></nav>
+  <div id="notice" class="error-banner" role="status" hidden></div>
+
+  <div class="ontology-admin-layout">
+  <div class="ontology-left-column">
+  <section class="panel ontology-file-panel" aria-labelledby="ontology-title">
+    <div class="panel-heading"><div><p class="eyebrow">УПРАВЛЕНИЕ АКСИОМАМИ</p><h2 id="ontology-title">Файлы Turtle</h2><p class="panel-subtitle">Помощник предлагает правки. Только вы применяете их, сохраняете файл и отдельно публикуете в граф.</p></div></div>
+    <div class="ontology-workspace">
+      <aside class="ontology-sidebar">
+        <h3>Онтологии</h3><div id="file-list" class="ontology-list"></div>
+        <hr>
+        <label>Новый slug<input id="new-slug" placeholder="foo-classification"></label>
+        <label>Загрузить локальный .ttl<input id="file-input" type="file" accept=".ttl,text/turtle"></label>
+        <button id="create" class="secondary-button" type="button">Создать файл из редактора</button>
+      </aside>
+      <div class="ontology-editor-column">
+        <div id="current-meta" class="empty-state">Выберите файл или укажите slug нового файла.</div>
+        <textarea id="editor" spellcheck="false" aria-label="Редактор Turtle" rows="24"></textarea>
+        <div class="header-actions ontology-actions"><button id="validate" class="secondary-button" type="button">Проверить</button><button id="save" class="secondary-button" type="button">Сохранить</button><button id="publish" class="secondary-button" type="button">Опубликовать сохранённую версию</button></div>
+        <p id="publish-status" class="panel-subtitle">Статус: не опубликовано (пока не проверено)</p>
+      </div>
+    </div>
+  </section>
+  <section class="panel ontology-stats-panel" aria-labelledby="class-statistics-title">
+    <div class="panel-heading">
+      <div><p class="eyebrow">RDF-ХРАНИЛИЩЕ</p><h2 id="class-statistics-title">Статистика классов и признаков</h2>
+        <p class="panel-subtitle">Показываются классы и признаки с непустыми значениями. Запрос выполняется только после нажатия кнопки.</p></div>
+    </div>
+    <form id="class-statistics-form" class="class-statistics-form">
+      <label for="class-statistics-namespace">Пространство имён</label>
+      <input id="class-statistics-namespace" name="namespace" type="text" required maxlength="512" spellcheck="false" placeholder="https://example.org/bitrix24#">
+      <button id="class-statistics-submit" class="secondary-button" type="submit">Показать статистику</button>
+    </form>
+    <div id="class-statistics" class="class-statistics-results" aria-live="polite">
+      <p class="empty-state">Введите пространство имён и нажмите «Показать статистику».</p>
+    </div>
+  </section>
+  </div>
+
+  <section class="panel assistant-panel" aria-labelledby="assistant-title">
+    <div class="panel-heading assistant-heading"><div><p class="eyebrow">ПРЕДЛОЖЕНИЯ БЕЗ АВТОМАТИЧЕСКОЙ ЗАПИСИ</p><h2 id="assistant-title">ИИ-помощник по онтологиям</h2><p id="assistant-model" class="panel-subtitle">Проверяю конфигурацию…</p></div><span id="assistant-state" class="assistant-state">Загрузка</span></div>
+    <div class="assistant-layout">
+      <div class="assistant-conversation">
+        <div id="assistant-history" class="assistant-history" aria-live="polite"><p class="empty-state">Опишите нужное правило или выберите быструю задачу.</p></div>
+        <div class="assistant-composer">
+          <label for="assistant-prompt">Задача помощнику</label>
+          <textarea id="assistant-prompt" rows="4" maxlength="8000" placeholder="Например: проверьте, безопасно ли классифицировать сделки по categoryCode"></textarea>
+          <div class="assistant-composer-actions"><span>Контекст включает текущий редактор, сохранённый TTL и агрегаты RDF.</span><button id="assistant-send" class="secondary-button" type="button">Спросить</button></div>
+        </div>
+      </div>
+      <aside class="assistant-quick-tasks"><h3>Быстрые задачи</h3>
+        <button type="button" data-prompt="Предложи минимальную аксиому для желаемой классификации. Сначала изучи подходящие признаки и профиль свойства." class="secondary-button">Создать аксиому</button>
+        <button type="button" data-prompt="Проверь текущий текст онтологии на широкие или противоречивые правила. Предложи исправленный полный TTL только если можешь обосновать его." class="secondary-button">Проверить правило</button>
+        <button type="button" data-prompt="Почему ожидаемый класс может не выводиться по текущей онтологии? Изучи сохранённый файл, опубликованный граф и агрегаты; отдели факты от гипотез." class="secondary-button">Почему нет вывода?</button>
+        <button type="button" data-prompt="Оцени предварительное влияние текущих правил на типы ресурсов. Используй только агрегаты и укажи ограничения прогноза." class="secondary-button">Оценить влияние</button>
+      </aside>
+    </div>
+  </section>
+  </div>
+  <footer><span>Источник истины — файл ontologies/*.ttl</span><span>ИИ не сохраняет файл и не публикует RDF-граф.</span></footer>
+</main>
+<script src="/ontologies.js" defer></script>
+</body></html>
