@@ -16,14 +16,46 @@ services:
     environment:
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: "8088"
-      AGENT_MCP_URL: http://mcp-graphdb:8090
+      AGENT_MODE: proxy
+      AGENT_BASE_URL: http://agent-service:8091
       RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
     ports:
       - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
     depends_on:
-      - mcp-graphdb
+      - agent-service
     group_add:
       - "${CRM_MONITOR_GID:-1000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - rdf_store
+
+  agent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - profile_logs:/app/logs
+    env_file:
+      - ${CRM_MONITOR_ENV_FILE:-.env}
+    environment:
+      AGENT_HOST: 0.0.0.0
+      AGENT_PORT: "8091"
+      AGENT_CORS_ALLOW_ORIGINS: http://127.0.0.1:8088
+      AGENT_MCP_URL: http://mcp-graphdb:8090
+      MCP_HOST: mcp-graphdb
+      MCP_PORT: "8090"
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+    command: ["python", "agent_service.py"]
+    ports:
+      - "127.0.0.1:${AGENT_SERVICE_PORT:-8091}:8091"
+    depends_on:
+      - mcp-graphdb
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

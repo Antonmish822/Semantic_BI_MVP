@@ -24,6 +24,8 @@ button { font: inherit; }
 .eyebrow { margin: 0 0 5px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .13em; }
 h1 { margin: 0; font-size: 21px; letter-spacing: -.03em; }
 .header-actions { gap: 17px; }
+.auth-link { font-size: 11px; font-weight: 650; color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: var(--paper); }
+.auth-link:hover { color: var(--ink); border-color: #a9c2c0; background: #fbfefe; }
 .page-nav { display: flex; gap: 7px; margin: -19px 0 24px; border-bottom: 1px solid var(--line); }
 .page-nav a { padding: 9px 12px 11px; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 650; border-bottom: 2px solid transparent; }
 .page-nav a:hover { color: var(--ink); }
@@ -138,6 +140,12 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .chat-body pre { overflow-x: auto; padding: 10px 12px; border-radius: 8px; background: #eef2f2; white-space: pre; }
 .chat-body pre code { padding: 0; background: transparent; }
 .chat-table-wrap { max-width: 100%; overflow-x: auto; margin: 9px 0; }
+.chat-table-actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
+.chat-table-download { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font-size: 10px; font-weight: 650; cursor: pointer; transition: border-color .16s, background .16s, transform .16s; }
+.chat-table-download:hover { border-color: #a9c2c0; background: #fbfefe; }
+.chat-table-download:active { transform: translateY(1px); }
+.chat-table-download--excel { border-color: #cfe6e3; color: var(--teal); }
+.chat-table-download--excel:hover { border-color: var(--teal); }
 .chat-body table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .chat-body th, .chat-body td { padding: 6px 8px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
 .chat-body th { background: #f3f7f6; font-weight: 700; }

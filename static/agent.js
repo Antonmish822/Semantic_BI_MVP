@@ -103,6 +103,55 @@ function markdownCells(line) {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
 }
 
+function sanitizeCsvValue(value) {
+  const text = String(value ?? '').replace(/\r\n?/g, '\n');
+  if (/["\n,;]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function tableToCsv(table) {
+  const rows = Array.from(table.querySelectorAll('tr'));
+  return rows.map((row) => {
+    const cells = Array.from(row.querySelectorAll('th, td'));
+    return cells.map((cell) => sanitizeCsvValue(cell.textContent?.trim() || '')).join(',');
+  }).join('\n');
+}
+
+function downloadTableAsCsv(table, filename) {
+  const csv = tableToCsv(table);
+  const blob = new Blob(["\ufeff", csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function ensureSheetJs() {
+  if (window.XLSX) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/vendor/xlsx.full.min.js';
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Не удалось загрузить SheetJS'));
+    document.head.append(script);
+  });
+}
+
+async function downloadTableAsXlsx(table, filename) {
+  await ensureSheetJs();
+  const workbook = window.XLSX.utils.table_to_book(table, { sheet: 'Данные' });
+  window.XLSX.writeFile(workbook, filename);
+}
+
 function isTableDivider(line) {
   const cells = markdownCells(line);
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
@@ -173,7 +222,30 @@ function renderMarkdown(parent, markdown) {
       table.append(tbody);
       const wrapper = document.createElement('div');
       wrapper.className = 'chat-table-wrap';
-      wrapper.append(table);
+      const actions = document.createElement('div');
+      actions.className = 'chat-table-actions';
+      const downloadCsv = document.createElement('button');
+      downloadCsv.type = 'button';
+      downloadCsv.className = 'chat-table-download';
+      downloadCsv.textContent = 'Скачать CSV';
+      downloadCsv.addEventListener('click', () => {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadTableAsCsv(table, `agent-table-${timestamp}.csv`);
+      });
+      const downloadExcel = document.createElement('button');
+      downloadExcel.type = 'button';
+      downloadExcel.className = 'chat-table-download chat-table-download--excel';
+      downloadExcel.textContent = 'Скачать Excel';
+      downloadExcel.addEventListener('click', async () => {
+        try {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          await downloadTableAsXlsx(table, `agent-table-${timestamp}.xlsx`);
+        } catch (error) {
+          setError(error?.message || 'Не удалось скачать Excel');
+        }
+      });
+      actions.append(downloadCsv, downloadExcel);
+      wrapper.append(actions, table);
       parent.append(wrapper);
       continue;
     }
@@ -321,15 +393,22 @@ async function sendMessage(text) {
   })();
 
   try {
+    const payload = { message: text, session_id: sessionId, history };
+    if (window.__AGENT_DEBUG__) {
+      console.info('[agent] request', payload);
+    }
     const response = await fetch('/api/agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(requestId ? { 'X-Request-ID': requestId } : {}) },
-      body: JSON.stringify({ message: text, session_id: sessionId, history })
+      body: JSON.stringify(payload)
     });
     httpStatus = response.status;
     requestId = response.headers.get('X-Request-ID') || requestId;
     phase = response.ok ? 'json' : 'http';
     const data = await response.json();
+    if (window.__AGENT_DEBUG__) {
+      console.info('[agent] response', response.status, data);
+    }
     if (!response.ok) {
       throw new Error(data.error || 'Не удалось получить ответ агента');
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CRM pulse dashboard and file-backed ontology administration."""
+"""Read-only CRM pulse dashboard for Bitrix24 RDF data."""
 from __future__ import annotations
 
 import base64
@@ -8,15 +8,17 @@ import json
 import hmac
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, quote_plus, urlsplit
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies,
@@ -176,6 +178,8 @@ CACHE_LOCK = threading.RLock()
 GRAPH_QUERY_EXCEPTIONS = (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError, json.JSONDecodeError)
 AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
 AGENT_SESSIONS_LOCK = threading.RLock()
+AUTH_SESSIONS: dict[str, dict[str, object]] = {}
+AUTH_SESSIONS_LOCK = threading.RLock()
 
 
 def cache_fallback_enabled() -> bool:
@@ -183,7 +187,7 @@ def cache_fallback_enabled() -> bool:
 
 
 def admin_token_matches(supplied: str, expected: str) -> bool:
-    """Accept legacy ASCII Bearer tokens and UTF-8 tokens carried as base64url."""
+    """Accept ASCII Bearer tokens and UTF-8 tokens carried as base64url."""
     if not expected:
         return False
     scheme, separator, credential = supplied.partition(" ")
@@ -199,6 +203,273 @@ def admin_token_matches(supplied: str, expected: str) -> bool:
     elif scheme != "Bearer":
         return False
     return hmac.compare_digest(credential.encode("utf-8"), expected.encode("utf-8"))
+
+
+def auth_enabled() -> bool:
+    return os.environ.get("AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_cookie_name() -> str:
+    return os.environ.get("AUTH_COOKIE_NAME", "crm_pulse_session").strip()
+
+
+def auth_cookie_max_age() -> int:
+    try:
+        return max(300, int(os.environ.get("AUTH_COOKIE_MAX_AGE", "86400")))
+    except ValueError:
+        return 86400
+
+
+def auth_cookie_domain() -> str | None:
+    value = os.environ.get("AUTH_COOKIE_DOMAIN", "").strip()
+    return value or None
+
+
+def auth_cookie_same_site() -> str:
+    value = os.environ.get("AUTH_COOKIE_SAME_SITE", "Lax").strip()
+    return value if value in {"Lax", "Strict", "None"} else "Lax"
+
+
+def auth_cookie_secure() -> bool:
+    return os.environ.get("AUTH_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_yandex_client_id() -> str:
+    return os.environ.get("YANDEX_CLIENT_ID", "").strip()
+
+
+def auth_yandex_client_secret() -> str:
+    return os.environ.get("YANDEX_CLIENT_SECRET", "").strip()
+
+
+def auth_yandex_redirect_uri() -> str:
+    return os.environ.get("YANDEX_REDIRECT_URI", "").strip()
+
+
+def auth_yandex_scopes() -> str:
+    return os.environ.get("YANDEX_SCOPES", "login:email login:info").strip()
+
+
+def auth_yandex_auth_url() -> str:
+    return os.environ.get("YANDEX_AUTH_URL", "https://oauth.yandex.ru/authorize").strip()
+
+
+def auth_yandex_token_url() -> str:
+    return os.environ.get("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token").strip()
+
+
+def auth_yandex_profile_url() -> str:
+    return os.environ.get("YANDEX_PROFILE_URL", "https://login.yandex.ru/info").strip()
+
+
+def auth_allowed_domains() -> set[str]:
+    raw = os.environ.get("AUTH_ALLOWED_DOMAINS", "").strip()
+    if not raw:
+        return set()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def auth_logout_redirect() -> str:
+    return os.environ.get("AUTH_LOGOUT_REDIRECT", "/").strip() or "/"
+
+
+def auth_debug() -> bool:
+    return os.environ.get("AUTH_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _secure_cookie_prefix() -> str:
+    return "__Host-" if auth_cookie_secure() and auth_cookie_domain() is None else ""
+
+
+def _cookie_name() -> str:
+    return f"{_secure_cookie_prefix()}{auth_cookie_name()}".strip()
+
+
+def _session_cookie(value: str) -> str:
+    cookie = SimpleCookie()
+    cookie[_cookie_name()] = value
+    cookie[_cookie_name()]["path"] = "/"
+    cookie[_cookie_name()]["max-age"] = str(auth_cookie_max_age())
+    cookie[_cookie_name()]["httponly"] = True
+    cookie[_cookie_name()]["samesite"] = auth_cookie_same_site()
+    if auth_cookie_domain():
+        cookie[_cookie_name()]["domain"] = auth_cookie_domain()
+    if auth_cookie_same_site() == "None" or auth_cookie_secure():
+        cookie[_cookie_name()]["secure"] = True
+    return cookie.output(header="").strip()
+
+
+def _clear_session_cookie() -> str:
+    cookie = SimpleCookie()
+    cookie[_cookie_name()] = ""
+    cookie[_cookie_name()]["path"] = "/"
+    cookie[_cookie_name()]["max-age"] = "0"
+    cookie[_cookie_name()]["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+    if auth_cookie_domain():
+        cookie[_cookie_name()]["domain"] = auth_cookie_domain()
+    return cookie.output(header="").strip()
+
+
+def _auth_log(message: str) -> None:
+    if auth_debug():
+        print(message)
+
+
+def _read_cookies(headers) -> dict[str, str]:
+    raw = headers.get("Cookie", "")
+    if not raw:
+        return {}
+    cookie = SimpleCookie()
+    cookie.load(raw)
+    return {key: morsel.value for key, morsel in cookie.items()}
+
+
+def _get_session_id(headers) -> str | None:
+    cookies = _read_cookies(headers)
+    return cookies.get(_cookie_name())
+
+
+def _get_auth_session(session_id: str | None) -> dict[str, object] | None:
+    if not session_id:
+        return None
+    with AUTH_SESSIONS_LOCK:
+        session = AUTH_SESSIONS.get(session_id)
+        if not session:
+            return None
+        expires_at = session.get("expires_at")
+        if isinstance(expires_at, float) and expires_at < time.time():
+            AUTH_SESSIONS.pop(session_id, None)
+            return None
+        return session
+
+
+def _set_auth_session(session_id: str, profile: dict[str, object]) -> None:
+    expires_at = time.time() + auth_cookie_max_age()
+    with AUTH_SESSIONS_LOCK:
+        if len(AUTH_SESSIONS) > 2048:
+            AUTH_SESSIONS.pop(next(iter(AUTH_SESSIONS)))
+        AUTH_SESSIONS[session_id] = {"profile": profile, "expires_at": expires_at}
+
+
+def _require_auth(headers) -> dict[str, object] | None:
+    if not auth_enabled():
+        return {"profile": {"login": "disabled"}}
+    return _get_auth_session(_get_session_id(headers))
+
+
+def _build_login_redirect(current_path: str) -> str:
+    return f"/auth/login?next={quote(current_path or '/')}"
+
+
+def _is_public_path(path: str) -> bool:
+    if path.startswith("/vendor/"):
+        return True
+    return path in {
+        "/auth/login",
+        "/auth/callback",
+        "/auth/logout",
+        "/auth/status",
+        "/styles.css",
+    }
+
+
+def _is_static_asset(path: str) -> bool:
+    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/styles.css"} or path.startswith("/vendor/")
+
+
+def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
+    return urlsplit(handler.path).path
+
+
+def _fetch_json(url: str, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, object]:
+    request = Request(url, data=data, method=method, headers=headers or {})
+    with urlopen(request, timeout=20) as response:
+        payload = response.read()
+        return json.loads(payload.decode("utf-8"))
+
+
+def _post_form(url: str, data: dict[str, str], headers: dict[str, str] | None = None) -> dict[str, object]:
+    encoded = urlencode(data).encode("utf-8")
+    request = Request(url, data=encoded, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
+    with urlopen(request, timeout=20) as response:
+        payload = response.read()
+        return json.loads(payload.decode("utf-8"))
+
+
+def _oauth_state_payload(next_path: str) -> str:
+    nonce = secrets.token_urlsafe(16)
+    return base64.urlsafe_b64encode(json.dumps({"nonce": nonce, "next": next_path}).encode("utf-8")).decode("ascii")
+
+
+def _parse_oauth_state(raw: str) -> dict[str, object] | None:
+    try:
+        decoded = base64.urlsafe_b64decode(raw.encode("ascii") + b"==").decode("utf-8")
+        payload = json.loads(decoded)
+        if isinstance(payload, dict) and isinstance(payload.get("nonce"), str):
+            return payload
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _build_auth_url(state: str) -> str:
+    query = urlencode({
+        "response_type": "code",
+        "client_id": auth_yandex_client_id(),
+        "redirect_uri": auth_yandex_redirect_uri(),
+        "scope": auth_yandex_scopes(),
+        "state": state,
+        "force_confirm": "yes",
+    })
+    return f"{auth_yandex_auth_url()}?{query}"
+
+
+def _exchange_token(code: str) -> dict[str, object]:
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": auth_yandex_client_id(),
+        "client_secret": auth_yandex_client_secret(),
+        "redirect_uri": auth_yandex_redirect_uri(),
+    }
+    return _post_form(auth_yandex_token_url(), data)
+
+
+def _fetch_profile(access_token: str) -> dict[str, object]:
+    params = urlencode({"format": "json"})
+    url = f"{auth_yandex_profile_url()}?{params}"
+    headers = {"Authorization": f"OAuth {access_token}"}
+    return _fetch_json(url, headers=headers)
+
+
+def _profile_email(profile: dict[str, object]) -> str:
+    email = profile.get("default_email") or profile.get("email")
+    if isinstance(email, str):
+        return email
+    emails = profile.get("emails")
+    if isinstance(emails, list) and emails:
+        for item in emails:
+            if isinstance(item, str) and item:
+                return item
+    return ""
+
+
+def _is_allowed_profile(profile: dict[str, object]) -> bool:
+    domains = auth_allowed_domains()
+    if not domains:
+        return True
+    email = _profile_email(profile).lower()
+    if not email or "@" not in email:
+        return False
+    return email.split("@", 1)[1] in domains
+
+
+def _render_auth_error(message: str) -> bytes:
+    payload = {
+        "error": message,
+        "help": "Проверьте настройки OAuth (YANDEX_CLIENT_ID/SECRET/REDIRECT_URI) и разрешённые домены",
+    }
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 def load_env() -> None:
@@ -279,142 +550,12 @@ def profile_error(exc: Exception) -> str:
     return "TimeoutError" if isinstance(cause, TimeoutError) else type(exc).__name__
 
 
-def _polza_chat(messages: list[dict[str, str]], *, request_id: str = "", step: int = 0) -> dict[str, object]:
-    started = time.monotonic()
-    timing = {"request_id": request_id, "stage": "model", "step": step}
-    try:
-        base_url = os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1")
-        api_key = os.environ.get("POLZA_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("Не задан POLZA_API_KEY")
-        payload = {
-            "model": os.environ.get("POLZA_MODEL", "polza-chat"),
-            "messages": messages,
-            "stream": False,
-        }
-        timeout = float(os.environ.get("POLZA_TIMEOUT", "60"))
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        timing["request_bytes"] = len(body)
-        request = Request(
-            base_url.rstrip("/") + "/chat/completions",
-            data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        )
-        with urlopen(request, timeout=timeout) as response:
-            timing["http_status"] = response.status
-            raw = response.read()
-            timing["response_bytes"] = len(raw)
-            result = json.loads(raw.decode("utf-8"))
-        usage = result.get("usage") if isinstance(result, dict) else None
-        if isinstance(usage, dict):
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                value = usage.get(key)
-                if type(value) is int and value >= 0:
-                    timing[key] = value
-        timing["outcome"] = "ok"
-        return result
-    except HTTPError as exc:
-        timing.update(outcome="http_error", http_status=exc.code, error_class="HTTPError")
-        with exc:
-            raw = exc.read()
-        timing["response_bytes"] = len(raw)
-        body = raw.decode("utf-8", errors="ignore")
-        try:
-            details = json.loads(body)
-        except json.JSONDecodeError:
-            details = {"message": body.strip() or "HTTPError"}
-        raise ValueError(f"Polza API error: {details}") from exc
-    except Exception as exc:
-        timing.update(outcome="error", error_class=profile_error(exc))
-        raise
-    finally:
-        profile_event("agent_stage", started, **timing)
+def agent_mode() -> str:
+    return os.environ.get("AGENT_MODE", "proxy").strip().lower()
 
 
-def _mcp_request(payload: dict[str, object], *, request_id: str = "", call: int = 0,
-                 tool_name: str | None = None, model_step: int | None = None) -> dict[str, object]:
-    started = time.monotonic()
-    method = payload["method"]
-    timing = {
-        "request_id": request_id, "stage": "mcp", "step": call, "method": method,
-        "tool": tool_name, "model_step": model_step,
-    }
-    try:
-        agent_url = os.environ.get("AGENT_MCP_URL", "").strip()
-        if agent_url:
-            url = agent_url.rstrip("/") + "/mcp"
-        else:
-            host = os.environ.get("MCP_HOST", "127.0.0.1")
-            port = int(os.environ.get("MCP_PORT", "8090"))
-            url = f"http://{host}:{port}/mcp"
-        timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        timing["request_bytes"] = len(body)
-        request = Request(url, data=body, headers={
-            "Content-Type": "application/json", "X-Request-ID": request_id, "X-MCP-Call": str(call),
-        })
-        with urlopen(request, timeout=timeout) as response:
-            timing["http_status"] = response.status
-            raw = response.read()
-            timing["response_bytes"] = len(raw)
-            result = json.loads(raw.decode("utf-8"))
-        rpc_error = result.get("error") if isinstance(result, dict) else None
-        rpc_result = result.get("result") if isinstance(result, dict) else None
-        if isinstance(result, dict) and "error" in result:
-            timing["outcome"] = "jsonrpc_error"
-            code = rpc_error.get("code") if isinstance(rpc_error, dict) else None
-            if type(code) is int:
-                timing["rpc_code"] = code
-        elif not isinstance(rpc_result, dict) or (
-            method == "tools/list" and not isinstance(rpc_result.get("tools"), list)
-        ):
-            timing["outcome"] = "invalid_response"
-        else:
-            timing["outcome"] = "ok"
-            timing["result_bytes"] = len(json.dumps(rpc_result, ensure_ascii=False).encode("utf-8"))
-        return result
-    except HTTPError as exc:
-        timing.update(outcome="http_error", http_status=exc.code, error_class="HTTPError")
-        exc.close()
-        raise
-    except Exception as exc:
-        timing.update(outcome="error", error_class=profile_error(exc))
-        raise
-    finally:
-        profile_event("agent_stage", started, **timing)
-
-
-def _mcp_tools_list(request_id: str = "") -> list[dict[str, object]]:
-    response = _mcp_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, request_id=request_id)
-    result = response.get("result") if isinstance(response, dict) else None
-    tools = result.get("tools") if isinstance(result, dict) else None
-    if not isinstance(tools, list):
-        raise ValueError("Некорректный ответ MCP")
-    return tools
-
-
-def _allowed_agent_tools() -> set[str]:
-    allow_sparql = os.environ.get("AGENT_ALLOW_SPARQL", "0").strip().lower()
-    tools = {"list_queries", "run_named_query", "explain_schema"}
-    if allow_sparql in {"1", "true", "yes"}:
-        tools.add("sparql_select")
-    return tools
-
-
-def _mcp_tool_call(name: str, arguments: dict[str, object], request_id: str = "", call: int = 0,
-                   model_step: int | None = None) -> dict[str, object]:
-    response = _mcp_request({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": name, "arguments": arguments},
-    }, request_id=request_id, call=call, tool_name=name, model_step=model_step)
-    if "error" in response:
-        raise ValueError(response["error"].get("message", "Ошибка MCP"))
-    result = response.get("result") if isinstance(response, dict) else None
-    if not isinstance(result, dict):
-        raise ValueError("Некорректный ответ MCP")
-    return result
+def agent_base_url() -> str:
+    return os.environ.get("AGENT_BASE_URL", "http://127.0.0.1:8091").strip()
 
 
 def _agent_system_prompt(
@@ -452,259 +593,9 @@ def _agent_system_prompt(
     return base_prompt + tools_hint + named_query_hint + json.dumps(catalog, ensure_ascii=False)
 
 
-def _read_named_query_catalog(result: dict[str, object]) -> list[dict[str, object]]:
-    content = result.get("content")
-    if isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict) or item.get("type") != "text":
-                continue
-            raw = item.get("text")
-            if not isinstance(raw, str):
-                continue
-            try:
-                payload = json.loads(raw)
-            except ValueError:
-                continue
-            queries = payload.get("queries") if isinstance(payload, dict) else None
-            if isinstance(queries, list) and all(
-                isinstance(query, dict)
-                and isinstance(query.get("name"), str)
-                and bool(query["name"].strip())
-                and isinstance(query.get("description"), str)
-                for query in queries
-            ):
-                return queries
-    raise ValueError("MCP вернул некорректный каталог именованных запросов")
-
-
-def _named_query_argument_error(arguments: dict[str, object], catalog: set[str]) -> str | None:
-    if "name" not in arguments:
-        return "missing_name"
-    name = arguments["name"]
-    if not isinstance(name, str):
-        return "invalid_name_type"
-    if not name:
-        return "empty_name"
-    if name not in catalog:
-        return "unknown_template"
-    if "parameters" in arguments and not isinstance(arguments["parameters"], dict):
-        return "invalid_parameters_type"
-    return None
-
-
-def _looks_like_tool_call(content: str) -> bool:
-    cleaned = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
-    return bool(re.search(
-        r"(\"tool_call\"|\"tool\"\s*:|\b(run_named_query|list_queries|explain_schema|sparql_select)\b)",
-        cleaned,
-    ))
-
-
 def _extract_tool_call(content: str) -> dict[str, object] | None:
     calls = _extract_tool_calls(content)
     return calls[0] if calls else None
-
-
-def _extract_tool_calls(content: str) -> list[dict[str, object]]:
-    content = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
-
-    def normalize_call(payload: object) -> dict[str, object] | None:
-        if not isinstance(payload, dict):
-            return None
-        wrapped = payload.get("tool_call")
-        if not isinstance(wrapped, dict):
-            wrapped = payload.get("tool")
-        if isinstance(wrapped, dict):
-            payload = wrapped
-
-        tool_calls = payload.get("tool_calls")
-        if isinstance(tool_calls, list):
-            items: list[dict[str, object]] = []
-            for item in tool_calls:
-                normalized = normalize_call(item)
-                if normalized:
-                    items.append(normalized)
-            if items:
-                return {"__batch__": items}
-
-        name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
-        if not isinstance(name, str):
-            return None
-        arguments = {}
-        for key in ("arguments", "args", "params"):
-            value = payload.get(key)
-            if isinstance(value, dict):
-                arguments = value.copy()
-                break
-
-        if name == "sparql_select" and isinstance(payload.get("query"), str):
-            arguments["query"] = payload["query"]
-        if name == "run_named_query":
-            aliases = ("query_name", "template_name", "template")
-            if "name" not in arguments:
-                for source in (arguments, payload):
-                    alias = next((key for key in aliases if key in source), None)
-                    if alias is not None:
-                        arguments["name"] = source[alias]
-                        break
-            if isinstance(arguments.get("name"), str):
-                arguments["name"] = arguments["name"].strip()
-            if "parameters" not in arguments:
-                if "params" in arguments:
-                    arguments["parameters"] = arguments["params"]
-                elif "parameters" in payload:
-                    arguments["parameters"] = payload["parameters"]
-            for key in (*aliases, "params"):
-                arguments.pop(key, None)
-        return {"name": name, "arguments": arguments}
-
-    def iter_json_objects(text: str) -> list[str]:
-        objects: list[str] = []
-        depth = 0
-        start: int | None = None
-        in_string = False
-        escape = False
-        for index, ch in enumerate(text):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-                continue
-            if ch == "{":
-                if depth == 0:
-                    start = index
-                depth += 1
-            elif ch == "}" and depth > 0:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    objects.append(text[start:index + 1])
-                    start = None
-        return objects
-
-    def append_call(result: dict[str, object] | None, calls: list[dict[str, object]]) -> None:
-        if not result:
-            return
-        if "__batch__" in result:
-            calls.extend(result["__batch__"])
-        else:
-            calls.append(result)
-
-    calls: list[dict[str, object]] = []
-    for match in re.finditer(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL):
-        raw_args = match.group(1).strip()
-        if not raw_args:
-            continue
-        try:
-            candidate = json.loads(raw_args)
-        except json.JSONDecodeError:
-            candidate = None
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        payload = None
-    if isinstance(payload, list):
-        for item in payload:
-            append_call(normalize_call(item), calls)
-    else:
-        append_call(normalize_call(payload), calls)
-    if calls:
-        return calls
-
-    for candidate_raw in iter_json_objects(content):
-        try:
-            candidate = json.loads(candidate_raw)
-        except json.JSONDecodeError:
-            continue
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
-    for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
-        try:
-            candidate = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            continue
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
-    invoke_match = re.search(r"<invoke\s+name=\"([\w_\-]+)\">(.*?)</invoke>", content, re.DOTALL)
-    if not invoke_match:
-        invoke_match = re.search(r"<tool_call>\s*([\w_\-]+)\s*\((.*?)\)\s*</tool_call>", content, re.DOTALL)
-    if invoke_match:
-        name = invoke_match.group(1)
-        raw_args = invoke_match.group(2).strip()
-        if not raw_args:
-            arguments = {}
-        else:
-            try:
-                arguments = json.loads(raw_args)
-            except json.JSONDecodeError:
-                arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": name, "arguments": arguments}]
-
-    tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
-    if tool_tag:
-        name = tool_tag.group(1)
-        raw_args = tool_tag.group(2).strip()
-        if not raw_args:
-            return [{"name": name, "arguments": {}}]
-        try:
-            arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": name, "arguments": arguments}]
-
-    for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
-        tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
-        if not tag_match:
-            tag_match = re.search(rf"<query\s+{tag}\b[^>]*>(.*?)</query>", content, re.DOTALL)
-        if not tag_match:
-            continue
-        raw_args = tag_match.group(1).strip()
-        if not raw_args:
-            return [{"name": tag, "arguments": {}}]
-        try:
-            arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": tag, "arguments": arguments}]
-
-    to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
-    if to_match:
-        return [{"name": to_match.group(1), "arguments": {}}]
-
-    return []
-
-
-def _sanitize_history(raw: object) -> list[dict[str, str]]:
-    if not isinstance(raw, list):
-        return []
-    clean: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role")
-        content = item.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            clean.append({"role": role, "content": content})
-    return clean
 
 
 def sparql_literal(value: str) -> str:
@@ -721,12 +612,9 @@ def load_query(name: str, graph_prefix: str) -> str:
 
 class RDFStoreClient:
     def __init__(self, backend: str, query_url: str, username: str,
-                 password: str, graph_prefix: str, timeout: float,
-                 base_url: str = "", repository: str = "") -> None:
+                 password: str, graph_prefix: str, timeout: float) -> None:
         self.backend = backend
         self.query_url = query_url
-        self.base_url = base_url
-        self.repository = repository
         self.username = username
         self.password = password
         self.graph_prefix = graph_prefix
@@ -1130,8 +1018,6 @@ def create_store_client(environ: dict[str, str] | None = None) -> RDFStoreClient
             "urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:",
         ),
         timeout=timeout,
-        base_url=base_url if backend == "graphdb" else "",
-        repository=repository if backend == "graphdb" else "",
     )
 
 
@@ -1603,8 +1489,95 @@ def get_view_state(page: str, project: str = "all", category: str = "all", emplo
 class Handler(BaseHTTPRequestHandler):
     server_version = "SemanticBICRMPulse/1.0"
 
+    def _is_authenticated(self) -> bool:
+        return _require_auth(self.headers) is not None
+
+    def _send_redirect(self, location: str, *, cookie: str | None = None) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+    def _auth_required(self, path: str) -> bool:
+        if not auth_enabled():
+            return False
+        if _is_public_path(path):
+            return False
+        if _is_static_asset(path):
+            return True
+        return path.startswith("/api/") or path in {
+            "/", "/index.html", "/leads", "/leads.html", "/employees", "/employees.html",
+            "/agent", "/agent.html", "/ontologies", "/ontologies.html",
+        }
+
+    def _handle_auth_gate(self, path: str) -> bool:
+        if not self._auth_required(path):
+            return False
+        if self._is_authenticated():
+            return False
+        self._send_redirect(_build_login_redirect(path))
+        return True
+
+    def _handle_auth_routes(self, path: str) -> bool:
+        if path == "/auth/status":
+            session = _require_auth(self.headers)
+            if not session:
+                self._send_json(401, {"authenticated": False})
+            else:
+                profile = session.get("profile", {}) if isinstance(session, dict) else {}
+                self._send_json(200, {"authenticated": True, "profile": profile})
+            return True
+        if path == "/auth/login":
+            if not auth_enabled():
+                self._send_json(404, {"error": "Auth disabled"})
+                return True
+            next_path = parse_qs(urlsplit(self.path).query).get("next", ["/"])[0]
+            state = _oauth_state_payload(next_path)
+            self._send_redirect(_build_auth_url(state))
+            return True
+        if path == "/auth/callback":
+            if not auth_enabled():
+                self._send_json(404, {"error": "Auth disabled"})
+                return True
+            params = parse_qs(urlsplit(self.path).query)
+            code = params.get("code", [""])[0]
+            state_raw = params.get("state", [""])[0]
+            payload = _parse_oauth_state(state_raw)
+            if not code or not payload:
+                self._send(400, _render_auth_error("Некорректный ответ OAuth"), "application/json; charset=utf-8")
+                return True
+            try:
+                token = _exchange_token(code)
+                access_token = token.get("access_token")
+                if not isinstance(access_token, str) or not access_token:
+                    raise ValueError("token missing")
+                profile = _fetch_profile(access_token)
+            except Exception as exc:
+                _auth_log(f"OAuth error: {type(exc).__name__}")
+                self._send(502, _render_auth_error("Не удалось получить токен"), "application/json; charset=utf-8")
+                return True
+            if not _is_allowed_profile(profile):
+                self._send(403, _render_auth_error("Доступ запрещён"), "application/json; charset=utf-8")
+                return True
+            session_id = secrets.token_urlsafe(24)
+            _set_auth_session(session_id, profile)
+            next_path = str(payload.get("next", "/")) if isinstance(payload, dict) else "/"
+            self._send_redirect(next_path, cookie=_session_cookie(session_id))
+            return True
+        if path == "/auth/logout":
+            self._send_redirect(auth_logout_redirect(), cookie=_clear_session_cookie())
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
         if path in {"/", "/index.html"}:
             self._send_file(STATIC / "index.html", "text/html; charset=utf-8")
         elif path in {"/leads", "/leads.html"}:
@@ -1615,8 +1588,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "agent.html", "text/html; charset=utf-8")
         elif path in {"/ontologies", "/ontologies.html"}:
             self._send_file(STATIC / "ontologies.html", "text/html; charset=utf-8")
+        elif path == "/app.js":
+            self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
+        elif path == "/leads.js":
+            self._send_file(STATIC / "leads.js", "text/javascript; charset=utf-8")
+        elif path == "/employees.js":
+            self._send_file(STATIC / "employees.js", "text/javascript; charset=utf-8")
+        elif path == "/agent.js":
+            self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
         elif path == "/ontologies.js":
             self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
+        elif path == "/styles.css":
+            self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
         elif path == "/api/ontology-assistant/config":
             config = assistant_config()
             self._send_json(200, {"enabled": config["enabled"], "model": config["model"],
@@ -1654,16 +1637,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, payload)
             except OntologyError as exc:
                 self._send_json(exc.status, {"error": str(exc), **exc.details})
-        elif path == "/app.js":
-            self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
-        elif path == "/leads.js":
-            self._send_file(STATIC / "leads.js", "text/javascript; charset=utf-8")
-        elif path == "/employees.js":
-            self._send_file(STATIC / "employees.js", "text/javascript; charset=utf-8")
-        elif path == "/agent.js":
-            self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
-        elif path == "/styles.css":
-            self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
+        elif path.startswith("/vendor/"):
+            file_path = (STATIC / path.lstrip("/"))
+            try:
+                resolved = file_path.resolve()
+                if not str(resolved).startswith(str(STATIC.resolve())):
+                    raise FileNotFoundError
+                if not resolved.is_file():
+                    raise FileNotFoundError
+                content_type = "application/javascript" if resolved.suffix == ".js" else "application/octet-stream"
+                self._send_file(resolved, f"{content_type}; charset=utf-8")
+            except FileNotFoundError:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
         elif path == "/api/pulse":
             try:
                 params = parse_qs(urlsplit(self.path).query)
@@ -1811,16 +1797,10 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 self.log_error("CRM view-state query failed (%s)", type(exc).__name__)
         elif path == "/api/agent/progress":
-            request_id = parse_qs(urlsplit(self.path).query).get("request_id", [""])[0]
-            if not PROFILE_ID.fullmatch(request_id):
-                self._send_json(400, {"error": "Некорректный request_id"})
+            if agent_mode() != "proxy":
+                self._send_json(404, {"error": "Agent proxy disabled"})
                 return
-            with AGENT_PROGRESS_LOCK:
-                progress = AGENT_PROGRESS.get(request_id.lower())
-            if progress is None:
-                self._send_json(404, {"error": "Запрос не найден"})
-            else:
-                self._send_json(200, progress)
+            self._proxy_agent_request("GET", self.path)
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
@@ -1857,10 +1837,70 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send(204 if saved else 503, b"", "text/plain")
 
+    def _read_raw_body(self, max_bytes: int = 512 * 1024) -> bytes | None:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > max_bytes:
+            return None
+        return self.rfile.read(length)
+
+    def _proxy_agent_request(self, method: str, path: str, body: bytes | None = None) -> None:
+        base_url = agent_base_url().rstrip("/")
+        url = f"{base_url}{path}"
+        headers: dict[str, str] = {}
+        content_type = self.headers.get("Content-Type")
+        if content_type:
+            headers["Content-Type"] = content_type
+        request_id = self.headers.get("X-Request-ID")
+        if request_id:
+            headers["X-Request-ID"] = request_id
+        timeout = float(os.environ.get("AGENT_TIMEOUT", "60"))
+        if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+            self.log_message(
+                "Agent proxy request: method=%s path=%s content_type=%s content_length=%s",
+                method,
+                path,
+                content_type,
+                len(body or b""),
+            )
+        try:
+            request = Request(url, data=body, headers=headers, method=method)
+            with urlopen(request, timeout=timeout) as response:
+                payload = response.read()
+                if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+                    self.log_message(
+                        "Agent proxy response: status=%s content_length=%s",
+                        response.status,
+                        len(payload),
+                    )
+                self._send(
+                    response.status,
+                    payload,
+                    response.headers.get("Content-Type", "application/json; charset=utf-8"),
+                    request_id=response.headers.get("X-Request-ID"),
+                )
+        except HTTPError as exc:
+            payload = exc.read()
+            if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
+                self.log_message(
+                    "Agent proxy error: status=%s content_length=%s",
+                    exc.code,
+                    len(payload),
+                )
+            self._send(
+                exc.code,
+                payload,
+                exc.headers.get("Content-Type", "application/json; charset=utf-8"),
+                request_id=exc.headers.get("X-Request-ID"),
+            )
+        except Exception as exc:
+            self.log_error("Agent proxy request failed (%s)", type(exc).__name__)
+            self._send_json(502, {"error": "Агент недоступен"})
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path == "/api/agent/profile":
-            self._record_browser_profile()
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
             return
         if path == "/api/ontologies/class-statistics":
             self._ontology_class_statistics()
@@ -1871,231 +1911,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ontologies" or path.startswith("/api/ontologies/"):
             self._ontology_write("POST")
             return
-        if path != "/api/agent":
-            self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
-            return
-        request_id = profile_request_id(self.headers.get("X-Request-ID", ""))
-        set_agent_progress(request_id, "starting", "Подготавливаю запрос")
-        request_started = time.monotonic()
-        model_calls = mcp_calls = history_count = context_bytes = response_bytes = 0
-        outcome = "error"
-        http_status = request_bytes = error_class = reply_kind = None
-        try:
-            request_bytes = int(self.headers.get("Content-Length", "0"))
-            payload = _read_json_body(self)
-            message = str(payload.get("message") or "").strip()
-            if not message:
-                outcome = "invalid_request"
-                http_status = 400
-                response_bytes = self._send_agent_json(http_status, {"error": "Поле message обязательно"}, request_id)
+        if path in {"/api/agent/profile", "/api/agent"}:
+            if agent_mode() != "proxy":
+                self._send_json(404, {"error": "Agent proxy disabled"})
                 return
-            history = _sanitize_history(payload.get("history"))
-            session_id = payload.get("session_id")
-            if not isinstance(session_id, str) or not session_id:
-                session_id = str(uuid.uuid4())
-            with AGENT_SESSIONS_LOCK:
-                stored = AGENT_SESSIONS.get(session_id, [])
-            if stored:
-                history = stored
-            max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
-            history = history[-max_history:]
-
-            history_count = len(history)
-            allowed_tools = _allowed_agent_tools()
-            set_agent_progress(request_id, "tools", "Получаю список инструментов")
-            mcp_calls += 1
-            tools = [tool for tool in _mcp_tools_list(request_id) if tool.get("name") in allowed_tools]
-            catalog: list[dict[str, object]] = []
-            catalog_result = None
-            if any(tool.get("name") == "run_named_query" for tool in tools):
-                set_agent_progress(request_id, "catalog", "Загружаю актуальный каталог запросов")
-                mcp_calls += 1
-                catalog_result = _mcp_tool_call("list_queries", {}, request_id, mcp_calls - 1)
-                catalog = _read_named_query_catalog(catalog_result)
-            template_names = {query["name"] for query in catalog}
-            system_prompt = _agent_system_prompt(tools, catalog)
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": message})
-            context_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-
-            def request_tool_calls() -> tuple[str, list[dict[str, object]], str, str | None]:
-                nonlocal model_calls
-                model_calls += 1
-                set_agent_progress(request_id, "model", "Анализирую запрос и подбираю данные")
-                response = _polza_chat(messages, request_id=request_id, step=model_calls)
-                try:
-                    model_message = response.get("choices", [{}])[0].get("message", {})
-                    raw = model_message.get("content", "")
-                    content_local = raw if isinstance(raw, str) else ""
-                    calls = _extract_tool_calls(content_local)
-                except Exception as exc:
-                    profile_event(
-                        "agent_model_result", request_id=request_id, step=model_calls,
-                        result_kind="invalid_response", error_class=profile_error(exc),
-                    )
-                    raise
-                argument_error = None
-                result_kind = "final_text" if content_local else "empty"
-                if calls:
-                    result_kind = "tool_call" if len(calls) == 1 else "tool_calls"
-                    for call in calls:
-                        if call.get("name") not in allowed_tools:
-                            result_kind = "disallowed_tool_call"
-                            break
-                        if call["name"] == "run_named_query":
-                            argument_error = _named_query_argument_error(call["arguments"], template_names)
-                            if argument_error:
-                                result_kind = "invalid_tool_arguments"
-                                break
-                elif model_message.get("tool_calls") or model_message.get("function_call"):
-                    result_kind = "native_tool_call"
-                elif _looks_like_tool_call(content_local):
-                    result_kind = "malformed_tool_call"
-                needs_repair = result_kind in {
-                    "invalid_tool_arguments", "malformed_tool_call", "native_tool_call",
-                    "disallowed_tool_call",
-                }
-                retry = model_calls < max_steps and not repair_attempted and needs_repair
-                action = ("repair" if retry else "reject") if needs_repair else None
-                profile_event(
-                    "agent_model_result", request_id=request_id, step=model_calls,
-                    result_kind=result_kind, argument_error=argument_error, retry=retry,
-                )
-                return content_local, calls, result_kind, action
-
-            max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
-            tool_steps = 0
-            repair_attempted = False
-            content = ""
-            last_tool: dict[str, object] | None = None
-            last_tool_result: dict[str, object] | None = None
-            for _ in range(max_steps):
-                content, tool_calls, reply_kind, action = request_tool_calls()
-                if action == "reject":
-                    raise ValueError("Агент не смог сформировать корректный вызов инструмента. Уточните запрос.")
-                if action == "repair":
-                    repair_attempted = True
-                    messages.append({
-                        "role": "system",
-                        "content": "Предыдущий вызов инструмента отклонён и не выполнен. "
-                                   "Выбери инструмент по последнему запросу пользователя и верни корректный JSON. "
-                                   "Для run_named_query укажи точное имя шаблона из каталога в arguments.name. "
-                                   "arguments.parameters должен быть объектом, если он нужен. "
-                                   "Если подходящий шаблон неясен, задай уточняющий вопрос.",
-                    })
-                    continue
-                if tool_calls:
-                    messages.append({"role": "assistant", "content": content})
-                    for tool_call in tool_calls:
-                        tool_name = str(tool_call["name"])
-                        progress_messages = {
-                            "list_queries": ("catalog", "Получаю актуальный каталог запросов"),
-                            "explain_schema": ("schema", "Проверяю структуру данных"),
-                            "run_named_query": ("query", "Запрашиваю данные из GraphDB"),
-                            "sparql_select": ("query", "Выполняю выборку в GraphDB"),
-                        }
-                        stage, progress_message = progress_messages.get(
-                            tool_name, ("tool", "Выполняю шаг обработки данных"),
-                        )
-                        set_agent_progress(request_id, stage, progress_message)
-                        last_tool = {"name": tool_name, "arguments": tool_call["arguments"]}
-                        if tool_name == "list_queries" and catalog_result is not None:
-                            tool_result = catalog_result
-                        else:
-                            mcp_calls += 1
-                            tool_result = _mcp_tool_call(
-                                tool_name, tool_call["arguments"], request_id, mcp_calls - 1, model_calls,
-                            )
-                        last_tool_result = tool_result
-                        tool_steps += 1
-                        messages.append({
-                            "role": "user",
-                            "content": "Результат вызова инструмента:\n" + json.dumps(
-                                tool_result, ensure_ascii=False
-                            ),
-                        })
-                    messages.append({
-                        "role": "system",
-                        "content": "Если нужны дополнительные данные, вызови следующий MCP-инструмент. "
-                                   "Иначе дай финальный ответ пользователю.",
-                    })
-                    continue
-
-                if tool_steps == 0 and not repair_attempted:
-                    set_agent_progress(request_id, "model", "Уточняю способ получения данных")
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "system",
-                        "content": "Нужно вызвать MCP-инструмент и получить данные. "
-                                   f"Разрешены только: {', '.join(sorted(allowed_tools))}. "
-                                   "Ответь JSON tool_call.",
-                    })
-                    continue
-
-                break
-
-            if reply_kind in {"tool_call", "tool_calls"}:
-                raise ValueError("Агент исчерпал лимит шагов до формирования ответа.")
-            if tool_steps == 0 and not content:
-                raise ValueError("Агент не смог сформировать ответ")
-            if not content:
-                raise ValueError("Агент не смог сформировать финальный ответ после MCP")
-
-            new_history = history + [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": content},
-            ]
-            new_history = new_history[-max_history:]
-            with AGENT_SESSIONS_LOCK:
-                AGENT_SESSIONS[session_id] = new_history
-            response_payload = {"session_id": session_id, "reply": content, "history": new_history, "request_id": request_id}
-            if last_tool:
-                response_payload["tool"] = last_tool
-            if last_tool_result is not None:
-                response_payload["tool_result"] = last_tool_result
-            http_status = 200
-            response_bytes = self._send_agent_json(http_status, response_payload, request_id)
-            outcome = "ok"
-            set_agent_progress(request_id, "done", "Ответ готов")
-        except (HTTPError, URLError, TimeoutError) as exc:
-            outcome = "transport_error"
-            error_class = profile_error(exc)
-            http_status = 502
-            response_bytes = self._send_agent_json(
-                http_status, {"error": "Не удалось связаться с агентом или MCP"}, request_id,
-            )
-            set_agent_progress(request_id, "error", "Не удалось завершить запрос")
-        except ValueError as exc:
-            outcome = "value_error"
-            error_class = profile_error(exc)
-            http_status = 400
-            response_bytes = self._send_agent_json(http_status, {"error": str(exc)}, request_id)
-            set_agent_progress(request_id, "error", "Не удалось обработать запрос")
-        except (BrokenPipeError, ConnectionResetError) as exc:
-            outcome = "client_disconnected"
-            error_class = profile_error(exc)
-        except Exception as exc:  # noqa: BLE001
-            outcome = "internal_error"
-            error_class = profile_error(exc)
-            http_status = 500
-            response_bytes = self._send_agent_json(http_status, {"error": "Внутренняя ошибка агента"}, request_id)
-            set_agent_progress(request_id, "error", "Произошла внутренняя ошибка")
-        finally:
-            profile_event(
-                "agent_request", request_started, request_id=request_id, outcome=outcome,
-                http_status=http_status, error_class=error_class, reply_kind=reply_kind,
-                model_calls=model_calls, mcp_calls=mcp_calls, history_messages=history_count,
-                context_bytes=context_bytes, request_bytes=request_bytes, response_bytes=response_bytes,
-            )
+            max_bytes = 4096 if path == "/api/agent/profile" else 512 * 1024
+            raw = self._read_raw_body(max_bytes=max_bytes)
+            if raw is None:
+                self._send(400, b"", "text/plain")
+                return
+            self._proxy_agent_request("POST", self.path, raw)
+            return
+        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
 
     def _send_agent_json(self, status: int, payload: object, request_id: str) -> int:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8", request_id=request_id)
         return len(body)
-
-    def do_PUT(self) -> None:  # noqa: N802
-        self._ontology_write("PUT")
 
     def _ontology_class_statistics(self) -> None:
         try:
@@ -2313,10 +2145,6 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
             self._send_json(502, {"error": "Запрос помощнику не выполнен", "code": "assistant_error"})
             self.log_error("Ontology assistant failed (%s)", type(exc).__name__)
 
-
-    def do_DELETE(self) -> None:  # noqa: N802
-        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
-
     def _ontology_write(self, method: str) -> None:
         path = urlsplit(self.path).path
         token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
@@ -2372,6 +2200,20 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
             self.log_error("Ontology operation failed (%s)", type(exc).__name__)
             self._send_json(502, {"error": "Операция с онтологией не выполнена"})
 
+    def do_PUT(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
+        if path.startswith("/api/ontologies/"):
+            self._ontology_write("PUT")
+            return
+        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+
     def _send_file(self, path: Path, content_type: str) -> None:
         self._send(200, path.read_bytes(), content_type)
 
@@ -2379,7 +2221,7 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8")
 
-    def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None) -> None:
+    def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None, cookie: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -2387,6 +2229,8 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
         self.send_header("X-Content-Type-Options", "nosniff")
         if request_id:
             self.send_header("X-Request-ID", request_id)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2410,7 +2254,7 @@ def main() -> None:
     port = int(os.environ.get("DASHBOARD_PORT", "8082"))
     server = ThreadingHTTPServer((host, port), Handler)
     store = create_store_client()
-    print(f"CRM pulse: http://{host}:{port} (RDF backend: {store.backend})")
+    print(f"CRM pulse: http://{host}:{port} (read-only; RDF backend: {store.backend})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

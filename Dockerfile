@@ -13,6 +13,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
 COPY server.py ./server.py
+COPY agent_service.py ./agent_service.py
 COPY mcp ./mcp
 COPY ontology_admin.py ./ontology_admin.py
 COPY ontology_assistant.py ./ontology_assistant.py
@@ -26,5 +27,5 @@ RUN groupadd --system --gid 10001 appuser \
     && install -d -o 10001 -g 10001 -m 0700 /app/logs
 USER 10001:10001
 
-EXPOSE 8088 8090
+EXPOSE 8088 8090 8091
 CMD ["python", "server.py"]
