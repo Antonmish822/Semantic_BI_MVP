@@ -42,7 +42,7 @@ Read-only дашборд для текущей RDF-проекции Bitrix24. С
 
 ## Локальный запуск
 
-Нужен Python 3.10 или новее; внешние Python-пакеты не требуются.
+Нужен Python 3.10 или новее и `uv` для установки зависимостей по `uv.lock`.
 
 ```bash
 cp .env.example .env
@@ -55,23 +55,42 @@ cp .env.example .env
 - задайте `GRAPH_PREFIX` для RDF-проекции. Для параллельного источника используются GraphDB `http://127.0.0.1:7200/`, repository `bitrix24_v2_parallel` и префикс `urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:`;
 - если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`;
 - для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
+- задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить сохранение и публикацию онтологий; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
 
-Запустите сервер:
+Установите зависимости и запустите сервисы в отдельных терминалах:
+
+```bash
+uv sync --locked
+python -m mcp.mcp_server
+```
+
+```bash
+python agent_service.py
+```
 
 ```bash
 python server.py
 ```
 
-Откройте <http://127.0.0.1:8082>. По умолчанию сервер привязан к `127.0.0.1:8082`; локальный адрес можно изменить через `DASHBOARD_HOST` и `DASHBOARD_PORT`.
+Откройте адрес из `DASHBOARD_HOST` и `DASHBOARD_PORT` (по примеру `.env.example`: <http://127.0.0.1:8085>).
 
 ## Запуск в Docker Compose
 
-Compose подключает контейнер к существующей внешней Docker-сети GraphDB и публикует дашборд только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, а порт хоста — `8088`.
+Compose собирает dashboard, agent-service и MCP из одного образа с locked dependencies, подключает их к существующей внешней Docker-сети GraphDB и публикует их порты только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, dashboard доступен на порту `8088`. Dashboard проксирует вызовы в agent-service, который обращается к MCP по внутреннему Docker DNS. Для сохранения TTL bind-mounted каталог `ontologies/` должен быть доступен дополнительной группе хоста. Настройка и команды находятся в [руководстве по онтологиям](ontologies/README.md).
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+chmod g+rwx,g+s ontologies
+CRM_MONITOR_GID="$(id -g)" docker compose up -d --build
 ```
+
+Для конфигурации в `.env.ai-agent` задайте путь через `CRM_MONITOR_ENV_FILE`:
+
+```bash
+CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent docker compose up -d --build
+```
+
+Если GraphDB опубликована на хосте, задайте её адрес из сети контейнера, например `RDF_URL_DOCKER=http://host.docker.internal:7200`.
 
 Откройте <http://127.0.0.1:8088>. Если Docker-сеть GraphDB называется иначе, задайте `RDF_DOCKER_NETWORK`, например:
 
@@ -79,7 +98,7 @@ docker compose up -d --build
 RDF_DOCKER_NETWORK=my_graphdb_network docker compose up -d --build
 ```
 
-Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для публикации на другом loopback-порту задайте `CRM_PULSE_MONITOR_PORT`, например `CRM_PULSE_MONITOR_PORT=8092`; контейнер по-прежнему слушает порт 8088. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
+Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для dashboard, MCP и agent-service доступны переменные портов `CRM_PULSE_MONITOR_PORT`, `MCP_SERVER_PORT` и `AGENT_SERVICE_PORT`; внутри сети контейнеры по-прежнему слушают `8088`, `8090`, `8091`. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
 
 Compose запускает контейнер с read-only корневой файловой системой и временным `/tmp`. Остановить сервис:
 
@@ -117,9 +136,20 @@ docker compose down
 
 - `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей, плюс proxy на `/api/agent`;
 - `agent_service.py` — HTTP API агента (FastAPI) и логика Polza.ai + MCP;
+- `ontology_admin.py` — безопасное сохранение TTL и публикация через Graph Store Protocol;
+- `ontology_assistant.py` — контекст и read-only инструменты помощника онтологий;
+- `ontologies/` — Turtle-аксиомы, доступные для редактирования на странице `/ontologies`;
 - `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
 - `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html` — страницы интерфейса;
 - `static/*.js` и `static/styles.css` — клиентская логика и стили;
 - `docs/` — справочные материалы о доступных RDF-признаках и онтологии.
 
-# Semantic_BI_MVP
+## Управление онтологиями
+
+Страница `/ontologies` показывает список Turtle-файлов, статистику классов/признаков и связи по `rdfs:domain`/`rdfs:range`. Администратор вводит `ONTOLOGY_ADMIN_TOKEN`; браузер хранит его в `localStorage` до очистки поля. Проверка и сохранение TTL не меняют GraphDB. Публикация — отдельная операция: сервер вычисляет URI графа из slug, отправляет Graph Store Protocol PUT и сверяет опубликованный граф. Публикация поддерживается только для GraphDB.
+
+Помощник онтологий доступен при настроенном `POLZA_API_KEY`. Он предлагает проверяемые изменения; применить их в редакторе, сохранить файл и опубликовать граф администратор должен отдельно. В Polza.ai отправляются запрос, история текущего диалога и содержимое редактора; инструменты не возвращают CRM-литералы, имена, URI экземпляров или персональные данные.
+
+## Аутентификация
+
+Yandex ID включается переменной `AUTH_ENABLED=1`. Для использования задайте параметры OAuth в `.env`; callback должен совпадать с URI в настройках приложения Yandex. При необходимости ограничьте доступ через `AUTH_ALLOWED_DOMAINS`.

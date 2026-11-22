@@ -1,10 +1,12 @@
 [project]
 name = "semantic-bi-crm-pulse-monitor"
 version = "0.1.0"
-description = "Read-only CRM pulse dashboard for Bitrix24 v2 parallel RDF"
+description = "CRM pulse dashboard, agent service, and ontology administration for Bitrix24 RDF"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
+    "openai>=1.80,<2",
+    "rdflib>=7.0,<8",
     "uvicorn>=0.27",
 ]
 

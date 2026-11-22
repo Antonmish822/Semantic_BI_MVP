@@ -1,0 +1,63 @@
+@prefix b24:  <https://example.org/bitrix24#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:bitrix24:ontology:deal-classification>
+    a owl:Ontology ;
+    rdfs:label "Bitrix24 deal classification"@en ;
+    rdfs:label "Классификация сделок Bitrix24"@ru ;
+    rdfs:comment "Выводит тип b24:Deal по наличию специфичных для сделки свойств. Каждого свойства по отдельности достаточно для вывода типа."@ru .
+
+b24:Deal a owl:Class ;
+    rdfs:label "Deal"@en ;
+    rdfs:label "Сделка"@ru .
+
+# Каждого из этих признаков достаточно для классификации субъекта как b24:Deal.
+b24:stageCode a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:string .
+
+b24:stageSemantic a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:string .
+
+b24:beginDate a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:dateTime .
+
+b24:closeDate a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:dateTime .
+
+b24:opportunity a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:decimal .
+
+b24:currency a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:string .
+
+b24:isManualOpportunity a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:boolean .
+
+b24:lastActivityTime a owl:DatatypeProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range xsd:dateTime .
+
+# Связи, специфичные для сделки, также позволяют вывести её тип.
+b24:originLead a owl:ObjectProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range b24:Lead .
+
+b24:lastActivityBy a owl:ObjectProperty ;
+    rdfs:domain b24:Deal ;
+    rdfs:range b24:User .
+
+
+b24:company a owl:ObjectProperty ;
+    rdfs:domain b24:Deal .
+
+b24:contact a owl:ObjectProperty ;
+    rdfs:domain b24:Deal .

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import json
+import hmac
 import os
 import re
 import secrets
@@ -19,6 +20,12 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
+
+from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies,
+                            ontology_uri, parse_ttl, publish, read_ontology, save_text)
+from ontology_assistant import (MAX_ASSISTANT_BODY, AssistantError, assistant_config,
+                                suggest as suggest_ontology, version_for)
+from rdflib import Graph
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -177,6 +184,25 @@ AUTH_SESSIONS_LOCK = threading.RLock()
 
 def cache_fallback_enabled() -> bool:
     return os.environ.get("CACHE_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def admin_token_matches(supplied: str, expected: str) -> bool:
+    """Accept ASCII Bearer tokens and UTF-8 tokens carried as base64url."""
+    if not expected:
+        return False
+    scheme, separator, credential = supplied.partition(" ")
+    if not separator:
+        return False
+    if scheme == "Bearer-UTF8":
+        try:
+            encoded = credential.encode("ascii")
+            encoded += b"=" * (-len(encoded) % 4)
+            credential = base64.b64decode(encoded, altchars=b"-_", validate=True).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError, ValueError):
+            return False
+    elif scheme != "Bearer":
+        return False
+    return hmac.compare_digest(credential.encode("utf-8"), expected.encode("utf-8"))
 
 
 def auth_enabled() -> bool:
@@ -348,7 +374,7 @@ def _is_public_path(path: str) -> bool:
 
 
 def _is_static_asset(path: str) -> bool:
-    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/styles.css"} or path.startswith("/vendor/")
+    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/styles.css"} or path.startswith("/vendor/")
 
 
 def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
@@ -1482,7 +1508,10 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if _is_static_asset(path):
             return True
-        return path.startswith("/api/") or path in {"/", "/index.html", "/leads", "/leads.html", "/employees", "/employees.html", "/agent", "/agent.html"}
+        return path.startswith("/api/") or path in {
+            "/", "/index.html", "/leads", "/leads.html", "/employees", "/employees.html",
+            "/agent", "/agent.html", "/ontologies", "/ontologies.html",
+        }
 
     def _handle_auth_gate(self, path: str) -> bool:
         if not self._auth_required(path):
@@ -1557,6 +1586,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "employees.html", "text/html; charset=utf-8")
         elif path in {"/agent", "/agent.html"}:
             self._send_file(STATIC / "agent.html", "text/html; charset=utf-8")
+        elif path in {"/ontologies", "/ontologies.html"}:
+            self._send_file(STATIC / "ontologies.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
         elif path == "/leads.js":
@@ -1565,8 +1596,47 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "employees.js", "text/javascript; charset=utf-8")
         elif path == "/agent.js":
             self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
+        elif path == "/ontologies.js":
+            self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
+        elif path == "/api/ontology-assistant/config":
+            config = assistant_config()
+            self._send_json(200, {"enabled": config["enabled"], "model": config["model"],
+                                  "allowed_actions": config["allowed_actions"]})
+        elif path == "/api/ontology-assistant/version":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                self._send_json(200, version_for(params.get("slug", [""])[0]))
+            except (OntologyError, ValueError) as exc:
+                status = exc.status if isinstance(exc, OntologyError) else 400
+                self._send_json(status, {"error": str(exc)})
+        elif path == "/api/ontologies":
+            self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
+                                  "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
+        elif path.startswith("/api/ontologies/") and path.count("/") == 3 and path != "/api/ontologies/validate":
+            slug = path.rsplit("/", 1)[-1]
+            try:
+                text, sha = read_ontology(ROOT / "ontologies", slug)
+                payload = {"slug": slug, "filename": slug + ".ttl", "uri": ontology_uri(slug),
+                           "text": text, "sha256": sha, "publication_status": "unknown"}
+                try:
+                    store = create_store_client()
+                    if store.backend == "graphdb":
+                        from ontology_admin import graph_store_url
+                        url = graph_store_url(store.base_url, store.repository, ontology_uri(slug))
+                        remote_data = graph_request(url, "GET", store.username, store.password, store.timeout)
+                        remote = Graph().parse(data=remote_data, format="turtle")
+                        payload["publication_status"] = "published" if isomorphic(parse_ttl(text, slug), remote) else "unpublished"
+                    else:
+                        payload["publication_status"] = "unsupported"
+                except HTTPError as exc:
+                    payload["publication_status"] = "missing" if exc.code == 404 else "unavailable"
+                except Exception:
+                    payload["publication_status"] = "unavailable"
+                self._send_json(200, payload)
+            except OntologyError as exc:
+                self._send_json(exc.status, {"error": str(exc), **exc.details})
         elif path.startswith("/vendor/"):
             file_path = (STATIC / path.lstrip("/"))
             try:
@@ -1832,6 +1902,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self._handle_auth_gate(path):
             return
+        if path == "/api/ontologies/class-statistics":
+            self._ontology_class_statistics()
+            return
+        if path == "/api/ontology-assistant/suggest":
+            self._ontology_assistant_suggest()
+            return
+        if path == "/api/ontologies" or path.startswith("/api/ontologies/"):
+            self._ontology_write("POST")
+            return
         if path in {"/api/agent/profile", "/api/agent"}:
             if agent_mode() != "proxy":
                 self._send_json(404, {"error": "Agent proxy disabled"})
@@ -1850,7 +1929,286 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, body, "application/json; charset=utf-8", request_id=request_id)
         return len(body)
 
+    def _ontology_class_statistics(self) -> None:
+        try:
+            payload = _read_json_body(self, max_bytes=4096)
+        except (ValueError, UnicodeError):
+            self._send_json(400, {"error": "Некорректный JSON запроса статистики"})
+            return
+
+        namespace = payload.get("namespace")
+        if not isinstance(namespace, str):
+            self._send_json(400, {"error": "Укажите URI пространства имён"})
+            return
+        namespace = namespace.strip()
+        parsed_namespace = urlsplit(namespace)
+        if (
+            not namespace or len(namespace) > 512 or not parsed_namespace.scheme
+            or (parsed_namespace.scheme in {"http", "https"} and not parsed_namespace.netloc)
+            or any(char.isspace() or ord(char) < 0x20 for char in namespace)
+        ):
+            self._send_json(400, {"error": "Укажите корректное абсолютное URI пространства имён"})
+            return
+
+        namespace_literal = sparql_literal(namespace)
+        class_query = """
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+SELECT ?class (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
+       (COUNT(DISTINCT ?instance) AS ?instanceCount)
+WHERE {
+  {
+    SELECT DISTINCT ?class WHERE {
+      {
+        { ?class a owl:Class }
+        UNION { ?class a rdfs:Class }
+        UNION { ?child rdfs:subClassOf ?class }
+        UNION { ?instance a ?class }
+      }
+      FILTER(isIRI(?class))
+      FILTER(STRSTARTS(STR(?class), {{namespace}}))
+    }
+  }
+  OPTIONAL {
+    ?class rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+  OPTIONAL {
+    ?class rdfs:comment ?comment .
+    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
+  }
+  OPTIONAL { ?instance a ?class }
+}
+GROUP BY ?class
+ORDER BY LCASE(STR(?class))
+""".replace("{{namespace}}", namespace_literal)
+        feature_query = """
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?class ?feature
+       (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
+       (COUNT(DISTINCT ?instance) AS ?instancesWithValue)
+WHERE {
+  ?instance a ?class ; ?feature ?value .
+  FILTER(STRSTARTS(STR(?class), {{namespace}}))
+  FILTER(?feature != rdf:type)
+  FILTER(!isLiteral(?value) || STRLEN(STR(?value)) > 0)
+  OPTIONAL {
+    ?feature rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+  OPTIONAL {
+    ?feature rdfs:comment ?comment .
+    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
+  }
+}
+GROUP BY ?class ?feature
+ORDER BY LCASE(STR(?class)) LCASE(STR(?feature))
+""".replace("{{namespace}}", namespace_literal)
+        relation_query = """
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?property ?domain ?range (SAMPLE(?label) AS ?labelRu)
+WHERE {
+  ?property rdfs:domain ?domain ; rdfs:range ?range .
+  FILTER(isIRI(?domain) && isIRI(?range))
+  FILTER(STRSTARTS(STR(?domain), {{namespace}}))
+  FILTER(STRSTARTS(STR(?range), {{namespace}}))
+  OPTIONAL {
+    ?property rdfs:label ?label .
+    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
+  }
+}
+GROUP BY ?property ?domain ?range
+ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
+""".replace("{{namespace}}", namespace_literal)
+
+        try:
+            store = create_store_client()
+            class_rows = store.select(class_query)
+            feature_rows = store.select(feature_query)
+            relation_rows = store.select(relation_query)
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError) as exc:
+            self.log_error("Ontology class statistics failed (%s)", type(exc).__name__)
+            self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища"})
+            return
+
+        def binding(row: dict[str, dict[str, str]], name: str) -> str:
+            value = row.get(name, {}).get("value", "")
+            return value if isinstance(value, str) else ""
+
+        def local_name(uri: str) -> str:
+            return uri.rstrip("/#").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+
+        classes: dict[str, dict[str, object]] = {}
+        for row in class_rows:
+            class_uri = binding(row, "class")
+            if not class_uri:
+                continue
+            try:
+                instance_count = int(binding(row, "instanceCount") or "0")
+            except ValueError:
+                instance_count = 0
+            classes[class_uri] = {
+                "uri": class_uri,
+                "name": local_name(class_uri),
+                "label_ru": binding(row, "labelRu") or None,
+                "comment_ru": binding(row, "commentRu") or None,
+                "instance_count": instance_count,
+                "features": [],
+            }
+
+        for row in feature_rows:
+            class_uri = binding(row, "class")
+            feature_uri = binding(row, "feature")
+            if not class_uri or not feature_uri:
+                continue
+            if class_uri not in classes:
+                classes[class_uri] = {
+                    "uri": class_uri,
+                    "name": local_name(class_uri),
+                    "label_ru": None,
+                    "comment_ru": None,
+                    "instance_count": 0,
+                    "features": [],
+                }
+            try:
+                populated_count = int(binding(row, "instancesWithValue") or "0")
+            except ValueError:
+                populated_count = 0
+            feature = {
+                "uri": feature_uri,
+                "name": local_name(feature_uri),
+                "label_ru": binding(row, "labelRu") or None,
+                "comment_ru": binding(row, "commentRu") or None,
+                "instances_with_value": populated_count,
+            }
+            classes[class_uri]["features"].append(feature)
+
+        result = sorted(classes.values(), key=lambda item: str(item["uri"]))
+        relations = []
+        for row in relation_rows:
+            property_uri = binding(row, "property")
+            domain_uri = binding(row, "domain")
+            range_uri = binding(row, "range")
+            if not property_uri or not domain_uri or not range_uri:
+                continue
+            relations.append({
+                "property": property_uri,
+                "property_name": local_name(property_uri),
+                "property_label_ru": binding(row, "labelRu") or None,
+                "domain": domain_uri,
+                "range": range_uri,
+            })
+        self._send_json(200, {
+            "namespace": namespace,
+            "class_count": len(result),
+            "classes": result,
+            "relations": relations,
+        })
+
+    def _ontology_assistant_suggest(self) -> None:
+        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        if not token:
+            self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
+            return
+        if not admin_token_matches(self.headers.get("Authorization", ""), token):
+            self._send_json(401, {"error": "Требуется токен администратора"})
+            return
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if not origin or urlsplit(origin).netloc != host:
+            self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_ASSISTANT_BODY:
+                self._send_json(413, {"error": "Размер запроса помощнику превышает 640 KiB"})
+                return
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                self._send_json(400, {"error": "Ожидается JSON-объект"})
+                return
+            result = suggest_ontology(payload, create_store_client())
+            self._send_json(200, result)
+        except AssistantError as exc:
+            self._send_json(exc.status, {"error": exc.message, "code": exc.code})
+            self.log_error("Ontology assistant failed (%s)", exc.code)
+        except OntologyError as exc:
+            self._send_json(exc.status, {"error": str(exc), **exc.details})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+            self._send_json(502, {"error": "Не удалось получить контекст RDF для помощника", "code": type(exc).__name__})
+            self.log_error("Ontology assistant context failed (%s)", type(exc).__name__)
+        except Exception as exc:
+            self._send_json(502, {"error": "Запрос помощнику не выполнен", "code": "assistant_error"})
+            self.log_error("Ontology assistant failed (%s)", type(exc).__name__)
+
+    def _ontology_write(self, method: str) -> None:
+        path = urlsplit(self.path).path
+        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        if not token:
+            self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
+            return
+        if not admin_token_matches(self.headers.get("Authorization", ""), token):
+            self._send_json(401, {"error": "Требуется токен администратора"})
+            return
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if not origin or urlsplit(origin).netloc != host:
+            self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_TTL_BYTES + 4096:
+                self._send_json(413, {"error": "Недопустимый размер запроса"})
+                return
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise OntologyError(400, "Ожидается JSON-объект")
+            if path == "/api/ontologies/validate" and method == "POST":
+                slug = payload.get("slug")
+                parse_ttl(payload.get("text"), slug)
+                self._send_json(200, {"valid": True, "uri": ontology_uri(slug)})
+                return
+            if path == "/api/ontologies" and method == "POST":
+                slug = payload.get("slug")
+                sha = save_text(ROOT / "ontologies", slug, payload.get("text"), None, create=True)
+                self._send_json(201, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
+                                      "published": False})
+                return
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[:2] == ["api", "ontologies"] and method == "PUT":
+                slug = parts[2]
+                sha = save_text(ROOT / "ontologies", slug, payload.get("text"),
+                                payload.get("expected_sha256"))
+                self._send_json(200, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
+                                      "published": False})
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "publish" and method == "POST":
+                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client()))
+                return
+            self._send_json(404, {"error": "Неизвестная операция управления онтологиями"})
+        except OntologyError as exc:
+            self._send_json(exc.status, {"error": str(exc), **exc.details})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
+        except PermissionError:
+            self._send_json(503, {"error": "Каталог ontologies недоступен для записи"})
+        except Exception as exc:
+            self.log_error("Ontology operation failed (%s)", type(exc).__name__)
+            self._send_json(502, {"error": "Операция с онтологией не выполнена"})
+
     def do_PUT(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
+        if path.startswith("/api/ontologies/"):
+            self._ontology_write("PUT")
+            return
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
 
     def do_DELETE(self) -> None:  # noqa: N802
