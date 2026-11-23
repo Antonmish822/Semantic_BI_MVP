@@ -128,6 +128,27 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .chat-user { border-left: 3px solid var(--teal); }
 .chat-assistant { border-left: 3px solid var(--amber); }
 .chat-meta { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.chat-message-actions { display: flex; justify-content: flex-end; }
+.save-prompt-button, .saved-prompt-button { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--teal); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; }
+.save-prompt-button:hover, .saved-prompt-button:hover { border-color: #a9c2c0; background: #fbfefe; }
+.save-prompt-button:disabled { color: var(--muted); cursor: not-allowed; }
+.saved-prompts { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdfd; }
+.saved-prompts-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; }
+.saved-prompts-summary::-webkit-details-marker { display: none; }
+.saved-prompts-summary::before { content: '▸'; color: var(--muted); font-size: 12px; transition: transform .16s; }
+.saved-prompts[open] .saved-prompts-summary::before { transform: rotate(90deg); }
+.saved-prompts-title { flex: 1; font-size: 12px; font-weight: 700; }
+.saved-prompts-title span { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 500; }
+.saved-prompts-toggle { color: var(--muted); font-size: 10px; }
+.saved-prompts-content { display: grid; gap: 8px; padding-top: 8px; }
+.saved-prompts-content > .panel-subtitle { margin: 0; }
+.saved-prompts-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.saved-prompt-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid #edf0f1; border-radius: 9px; background: var(--paper); }
+.saved-prompt-text { min-width: 0; overflow-wrap: anywhere; color: var(--ink); font-size: 11px; line-height: 1.45; }
+.saved-prompt-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+.saved-prompt-button--delete { color: #983c3d; }
+.saved-prompts-feedback { min-height: 0; margin: 0; color: var(--muted); font-size: 10px; }
+.saved-prompts-feedback:empty { display: none; }
 .chat-duration { margin-left: 9px; font-size: 10px; font-weight: 400; letter-spacing: 0; text-transform: none; }
 .chat-body { min-width: 0; font-size: 12px; color: var(--ink); line-height: 1.55; overflow-wrap: anywhere; }
 .chat-body > :first-child { margin-top: 0; }
@@ -159,6 +180,10 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .chat-input { width: 100%; min-height: 96px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); font: inherit; font-size: 12px; resize: vertical; background: var(--paper); color: var(--ink); }
 .chat-input:focus { outline: none; border-color: #a9c2c0; box-shadow: 0 0 0 3px #e4f4f1; }
 .chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+@media (max-width: 620px) {
+  .saved-prompt-item { align-items: flex-start; flex-direction: column; }
+  .saved-prompt-actions { align-self: flex-end; }
+}
 
 .page-blocks { display: grid; gap: 17px; }
 .block { order: var(--block-order, 0); }

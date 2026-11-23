@@ -54,6 +54,17 @@
           <p class="panel-subtitle">Агент использует MCP-инструменты для выборок из RDF-хранилища.</p>
         </div>
       </div>
+      <details id="saved-prompts-panel" class="saved-prompts">
+        <summary class="saved-prompts-summary">
+          <span class="saved-prompts-title">Сохранённые промпты <span id="saved-prompts-count">0/10</span></span>
+          <span class="saved-prompts-toggle">Показать</span>
+        </summary>
+        <div class="saved-prompts-content">
+          <p class="panel-subtitle">Сохраняйте удачные вопросы после ответа агента. Список хранится в этом браузере.</p>
+          <ul id="saved-prompts-list" class="saved-prompts-list"></ul>
+          <p id="saved-prompts-feedback" class="saved-prompts-feedback" role="status" aria-live="polite"></p>
+        </div>
+      </details>
       <div id="chat-log" class="chat-log" aria-live="polite"></div>
       <form id="chat-form" class="chat-form" autocomplete="off">
         <textarea id="chat-input" class="chat-input" rows="3" placeholder="Например: Покажи топ-5 категорий по активным сделкам" required></textarea>

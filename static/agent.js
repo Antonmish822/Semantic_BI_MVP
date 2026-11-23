@@ -8,6 +8,14 @@ const chatReset = byId('chat-reset');
 const agentStatus = byId('agent-status');
 const agentProgress = byId('agent-progress');
 const agentProgressStage = byId('agent-progress-stage');
+const savedPromptsList = byId('saved-prompts-list');
+const savedPromptsCount = byId('saved-prompts-count');
+const savedPromptsFeedback = byId('saved-prompts-feedback');
+const savedPromptsPanel = byId('saved-prompts-panel');
+const savedPromptsToggle = savedPromptsPanel?.querySelector('.saved-prompts-toggle');
+const SAVED_PROMPTS_KEY = 'agentSavedPrompts';
+const MAX_SAVED_PROMPTS = 10;
+let savedPrompts = readSavedPrompts();
 let sessionId = sessionStorage.getItem('agentSessionId');
 let history = readStoredMessages('agentHistory');
 let transcript = readStoredMessages('agentTranscript');
@@ -33,8 +41,132 @@ function saveStoredMessages() {
   }
 }
 
+function readSavedPrompts() {
+  try {
+    const value = JSON.parse(localStorage.getItem(SAVED_PROMPTS_KEY) || '[]');
+    if (!Array.isArray(value)) return [];
+    return value.filter((prompt) => typeof prompt === 'string' && prompt.trim())
+      .map((prompt) => prompt.trim()).slice(0, MAX_SAVED_PROMPTS);
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedPrompts() {
+  try {
+    localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(savedPrompts));
+    return true;
+  } catch {
+    setSavedPromptsFeedback('Не удалось сохранить список в хранилище браузера.');
+    return false;
+  }
+}
+
+function setSavedPromptsFeedback(message = '') {
+  if (savedPromptsFeedback) savedPromptsFeedback.textContent = message;
+}
+
+function refreshSavePromptButtons() {
+  const full = savedPrompts.length >= MAX_SAVED_PROMPTS;
+  document.querySelectorAll('.save-prompt-button').forEach((button) => {
+    button.disabled = full;
+    button.title = full ? 'Удалите сохранённый промпт, чтобы освободить место' : 'Сохранить эту формулировку';
+  });
+  if (full) setSavedPromptsFeedback('Достигнут лимит 10. Удалите один промпт вручную, чтобы сохранить новый.');
+}
+
+function renderSavedPrompts() {
+  if (!savedPromptsList || !savedPromptsCount) return;
+  savedPromptsList.replaceChildren();
+  savedPromptsCount.textContent = `${savedPrompts.length}/${MAX_SAVED_PROMPTS}`;
+  savedPromptsList.hidden = savedPrompts.length === 0;
+  for (const [index, prompt] of savedPrompts.entries()) {
+    const item = document.createElement('li');
+    item.className = 'saved-prompt-item';
+    const text = document.createElement('span');
+    text.className = 'saved-prompt-text';
+    text.textContent = prompt;
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-prompt-actions';
+    const useButton = document.createElement('button');
+    useButton.type = 'button';
+    useButton.className = 'saved-prompt-button';
+    useButton.textContent = 'Вставить';
+    useButton.addEventListener('click', () => {
+      chatInput.value = prompt;
+      chatInput.focus();
+      chatInput.setSelectionRange(prompt.length, prompt.length);
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'saved-prompt-button saved-prompt-button--delete';
+    removeButton.textContent = 'Удалить';
+    removeButton.setAttribute('aria-label', `Удалить сохранённый промпт ${index + 1}`);
+    removeButton.addEventListener('click', () => {
+      const [removedPrompt] = savedPrompts.splice(index, 1);
+      if (persistSavedPrompts()) {
+        renderSavedPrompts();
+        setSavedPromptsFeedback('Промпт удалён. Теперь можно сохранить новый.');
+      } else {
+        savedPrompts.splice(index, 0, removedPrompt);
+      }
+    });
+
+    actions.append(useButton, removeButton);
+    item.append(text, actions);
+    savedPromptsList.append(item);
+  }
+  refreshSavePromptButtons();
+}
+
+function addSavePromptAction(messageNode, prompt) {
+  if (!messageNode || messageNode.querySelector('.save-prompt-button')) return;
+  const actions = document.createElement('div');
+  actions.className = 'chat-message-actions';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'save-prompt-button';
+  button.textContent = 'Сохранить промпт';
+  button.addEventListener('click', () => {
+    const normalized = prompt.trim();
+    if (!normalized) return;
+    if (savedPrompts.includes(normalized)) {
+      setSavedPromptsFeedback('Такая формулировка уже сохранена.');
+      return;
+    }
+    if (savedPrompts.length >= MAX_SAVED_PROMPTS) {
+      setSavedPromptsFeedback('Достигнут лимит 10. Удалите один промпт вручную, чтобы сохранить новый.');
+      return;
+    }
+    savedPrompts.push(normalized);
+    if (persistSavedPrompts()) {
+      renderSavedPrompts();
+      setSavedPromptsFeedback('Промпт сохранён.');
+    } else {
+      savedPrompts.pop();
+    }
+  });
+  actions.append(button);
+  messageNode.append(actions);
+  refreshSavePromptButtons();
+}
+
 function restoreChat() {
-  for (const item of transcript) renderMessage(item.role, item.content);
+  let lastUserNode = null;
+  let lastUserPrompt = '';
+  for (const item of transcript) {
+    const node = renderMessage(item.role, item.content);
+    if (item.role === 'user') {
+      lastUserNode = node;
+      lastUserPrompt = item.content;
+    } else if (lastUserNode) {
+      addSavePromptAction(lastUserNode, lastUserPrompt);
+      lastUserNode = null;
+      lastUserPrompt = '';
+    }
+  }
   if (transcript.length) setStatus('online', 'Агент онлайн');
 }
 
@@ -313,6 +445,7 @@ function renderMessage(role, text, { durationMs } = {}) {
   item.append(meta, body);
   chatLog.append(item);
   chatLog.scrollTop = chatLog.scrollHeight;
+  return item;
 }
 
 function setError(message) {
@@ -366,7 +499,7 @@ async function sendMessage(text) {
       keepalive: true
     }).catch(() => {});
   };
-  renderMessage('user', text);
+  const userMessageNode = renderMessage('user', text);
   transcript.push({ role: 'user', content: text });
   saveStoredMessages();
   agentProgress.hidden = false;
@@ -417,6 +550,7 @@ async function sendMessage(text) {
     renderToolState(data);
     const reply = data.reply || 'Нет ответа от агента.';
     renderMessage('assistant', reply, { durationMs: performance.now() - startedAt });
+    addSavePromptAction(userMessageNode, text);
     transcript.push({ role: 'assistant', content: reply });
     history = Array.isArray(data.history) ? data.history : history;
     saveStoredMessages();
@@ -455,5 +589,10 @@ chatReset.addEventListener('click', () => {
   resetChat();
 });
 
+savedPromptsPanel?.addEventListener('toggle', () => {
+  if (savedPromptsToggle) savedPromptsToggle.textContent = savedPromptsPanel.open ? 'Скрыть' : 'Показать';
+});
+
 setStatus('pending', 'Ожидание…');
+renderSavedPrompts();
 restoreChat();
