@@ -1,6 +1,8 @@
 # CRM Pulse Monitor
 
-Read-only дашборд для текущей RDF-проекции Bitrix24. Сервер выполняет SPARQL `SELECT` к GraphDB или Apache Jena Fuseki, браузер получает результаты через JSON API. Дашборд не изменяет данные в CRM или RDF-хранилище.
+Дашборд читает текущую RDF-проекцию Bitrix24 через GraphDB или Apache Jena Fuseki и отдаёт результаты через JSON API. Запросы CRM-данных только читают; отдельная административная страница онтологий умеет сохранять Turtle-файлы и публиковать онтологии в GraphDB.
+
+Основные руководства: [конфигурация `.env`](docs/CONFIGURATION.md), [MCP и AI Agent](README_MCP.md), [управление онтологиями](ontologies/README.md). Шаблон конфигурации без секретов — [`.env.example`](.env.example).
 
 ## Страницы
 
@@ -49,11 +51,11 @@ Read-only дашборд для текущей RDF-проекции Bitrix24. С
 cp .env.example .env
 ```
 
-Настройте `.env`:
+Подробное описание переменных и режимов конфигурации находится в [справочнике конфигурации](docs/CONFIGURATION.md); [`.env.example`](.env.example) — полный шаблон без рабочих секретов. Для обычного dashboard настройте:
 
 - `RDF_BACKEND=graphdb` или `RDF_BACKEND=fuseki`;
 - для GraphDB задайте `RDF_URL` и `GRAPHDB_REPOSITORY`; для Fuseki задайте `RDF_URL` как URL dataset, например `http://127.0.0.1:3030/Persistent` (сервер добавит `/query`, если его нет в URL);
-- задайте `GRAPH_PREFIX` для RDF-проекции. Для параллельного источника используются GraphDB `http://127.0.0.1:7200/`, repository `bitrix24_v2_parallel` и префикс `urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:`;
+- задайте `GRAPH_PREFIX` для RDF-проекции. Пример адреса, repository и префикса показан в [`.env.example`](.env.example); подставьте значения вашего GraphDB стенда;
 - если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`;
 - для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
 - задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить сохранение и публикацию онтологий; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
@@ -88,8 +90,11 @@ CRM_MONITOR_GID="$(id -g)" docker compose up -d --build
 Для конфигурации в `.env.ai-agent` задайте путь через `CRM_MONITOR_ENV_FILE`:
 
 ```bash
-CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent docker compose up -d --build
+CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent \
+  docker compose --env-file .env.ai-agent up -d --build
 ```
+
+`--env-file` нужен, чтобы Compose использовал значения из `.env.ai-agent` также для подстановки портов, URL GraphDB и Docker-сети. Подробности — в [справочнике конфигурации](docs/CONFIGURATION.md#как-приложение-читает-конфигурацию).
 
 Если GraphDB опубликована на хосте, задайте её адрес из сети контейнера, например `RDF_URL_DOCKER=http://host.docker.internal:7200`.
 
@@ -122,12 +127,12 @@ docker compose down
 - `AGENT_BASE_URL` — базовый URL сервиса агента (по умолчанию `http://127.0.0.1:8091`);
 - `AGENT_TIMEOUT` — таймаут проксирования к агенту;
 - `AGENT_CORS_ALLOW_ORIGINS` — CORS-оригины для сервиса агента (по умолчанию `*`);
-- `AGENT_ALLOW_SPARQL` — разрешить прямые вызовы `sparql_select` (`0/1`);
+- `AGENT_ALLOW_SPARQL` — разрешить AI Agent выбирать `sparql_select` (`0/1`; MCP независимо проверяет серверные условия);
 - `POLZA_BASE_URL` — базовый URL API (по умолчанию `https://polza.ai/api/v1`);
 - `POLZA_API_KEY` — ключ доступа к Polza.ai;
 - `POLZA_MODEL` — модель Polza.ai (по умолчанию `polza-chat`);
 - `POLZA_TIMEOUT` — таймаут запросов Polza.ai в секундах (по умолчанию `60`);
-- `MCP_TIMEOUT` — таймаут запросов MCP в секундах (по умолчанию `30`);
+- `MCP_TIMEOUT` — timeout одного вызова агента к MCP в секундах (по умолчанию `30`);
 - `AGENT_MAX_HISTORY` — максимальное число сообщений в истории (по умолчанию `12`);
 - `AGENT_SYSTEM_PROMPT` — системный промпт агента (опционально).
 

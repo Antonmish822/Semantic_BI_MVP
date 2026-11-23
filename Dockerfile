@@ -21,6 +21,7 @@ COPY ontology ./ontology
 COPY ontologies ./ontologies
 COPY queries ./queries
 COPY docs ./docs
+COPY .agents ./.agents
 COPY static ./static
 
 RUN groupadd --system --gid 10001 appuser \

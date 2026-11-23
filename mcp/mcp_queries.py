@@ -106,17 +106,17 @@ def render_named_query(name: str, graph_prefix: str, params: dict[str, Any] | No
     if extra:
         raise QueryDefinitionError("Переданы неизвестные параметры запроса")
     query = load_query(definition.template_file, graph_prefix)
+    replacements = {}
     for param in definition.params:
         value = provided.get(param.name, param.default)
-        if value is None and param.required:
-            raise QueryDefinitionError("Не указан обязательный параметр запроса")
         if value is None:
-            continue
+            raise QueryDefinitionError("Не указан обязательный параметр запроса")
+        if (not isinstance(value, str) or len(value.encode("utf-8")) > 512
+                or any(ord(char) < 32 for char in value) or "\\" in value):
+            raise QueryDefinitionError("Недопустимое значение параметра запроса")
         marker = f"{{{{{param.name}}}}}"
         if marker in query:
             if param.name == "as_of":
-                if not isinstance(value, str):
-                    raise QueryDefinitionError("Параметр as_of должен быть датой UTC в формате ISO 8601")
                 try:
                     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
                 except ValueError as exc:
@@ -124,7 +124,7 @@ def render_named_query(name: str, graph_prefix: str, params: dict[str, Any] | No
                 if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
                     raise QueryDefinitionError("Параметр as_of должен содержать часовой пояс UTC")
                 canonical = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-                query = query.replace(marker, sparql_literal(canonical) + "^^xsd:dateTime")
+                replacements[marker] = sparql_literal(canonical) + "^^xsd:dateTime"
             else:
-                query = query.replace(marker, sparql_literal(str(value)))
-    return query
+                replacements[marker] = sparql_literal(value)
+    return re.sub(r"\{\{[a-zA-Z_]\w*\}\}", lambda match: replacements.get(match[0], match[0]), query)
