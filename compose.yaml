@@ -19,10 +19,12 @@ services:
       AGENT_MODE: proxy
       AGENT_BASE_URL: http://agent-service:8091
       RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      ONTOLOGY_MCP_URL: http://mcp-graphdb:8090/mcp
     ports:
       - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
     depends_on:
       - agent-service
+      - mcp-graphdb
     group_add:
       - "${CRM_MONITOR_GID:-1000}"
     extra_hosts:

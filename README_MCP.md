@@ -1,27 +1,53 @@
-# MCP GraphDB (read-only)
+# MCP GraphDB and analytic projection
 
 ## Что это
-MCP-сервер предоставляет read-only доступ к GraphDB через JSON-RPC endpoint `/mcp`. Он принимает только SPARQL `SELECT` запросы, возвращает результаты в формате SPARQL JSON (`bindings`) и поддерживает набор именованных шаблонов запросов.
+MCP-сервер принимает JSON-RPC на `/mcp`. Инструмент `sparql_select` закрыт по умолчанию. Он может читать утверждённую аналитическую проекцию или настроенный синтетический репозиторий. Каталог именованных шаблонов доступен в обоих режимах, запуск шаблонов открыт только в синтетическом режиме.
 
 ## Как это работает
 
 1. Клиент отправляет JSON-RPC `tools/list` или `tools/call` на `http://<host>:<port>/mcp`.
-2. Сервер валидирует запрос (только `SELECT`, запрет `INSERT/DELETE/LOAD/...` и `SERVICE`).
-3. Запрос выполняется через тот же GraphDB-клиент, что и dashboard.
-4. Сервер ограничивает результат по числу строк и общему размеру ответа.
+2. `tools/list` публикует `sparql_select` только при включённом серверном флаге, bearer token и корректной конфигурации одного из режимов: свежей policy или выделенного синтетического repository. `tools/call` повторно проверяет доступность инструмента.
+3. В аналитической проекции MCP проверяет поддерживаемую форму и строит новый запрос с серверным dataset и разрешёнными URI; исходный SELECT не отправляется в GraphDB. В синтетическом режиме запрос проверяется и исполняется только в настроенном repository с ограничениями формы и результата.
+4. Отдельный транспорт ограничивает deadline, таймаут GraphDB, размер ответа, число строк, параллельность и состав результата.
 
 Ключевые модули:
 - [`mcp/mcp_server.py`](mcp/mcp_server.py) — HTTP JSON-RPC сервер.
-- [`mcp/mcp_security.py`](mcp/mcp_security.py) — валидация SPARQL.
+- [`mcp/safe_sparql.py`](mcp/safe_sparql.py) — ограниченный разбор, политика, построение нового запроса, изолированный транспорт и фильтр результата.
+- [`mcp/mcp_security.py`](mcp/mcp_security.py) — прежняя общая проверка; динамический MCP SELECT больше её не использует.
 - [`mcp/mcp_queries.py`](mcp/mcp_queries.py) — именованные запросы и шаблоны.
 - [`mcp/mcp_schema.py`](mcp/mcp_schema.py) — описание схемы/онтологии для инструмента `explain_schema`.
 
 ## Инструменты MCP
 
-- `sparql_select` — выполнить read-only SPARQL `SELECT` (для агента обычно выключен).
+- `sparql_select` — ограниченный SELECT по отдельной аналитической проекции либо по полностью синтетическому repository. Оба режима требуют серверный флаг и bearer token; только projection mode требует policy.
 - `list_queries` — список именованных запросов и параметров.
-- `run_named_query` — запуск именованного запроса с параметрами.
-- `explain_schema` — краткая схема (классы, свойства, доступные признаки и `graph_prefix`).
+- `run_named_query` — запускает шаблоны на синтетическом репозитории. В остальных режимах возвращает `data_policy_unapproved`.
+- `explain_schema` — по запросу агента возвращает актуальный опубликованный TBox: полные URI классов/свойств, метки, комментарии, `rdfs:domain`/`rdfs:range`, иерархию, аксиомы и исходный Turtle для каждой опубликованной онтологии; также отдаёт область графов данных и fingerprint/статус чтения.
+
+Когда агенту доступен `sparql_select`, он загружает проектный навык `.agents/skills/bitrix24-graphdb-sparql/SKILL.md` в системный контекст запроса. Навык инструктирует агента сначала свериться с каталогом, получить актуальную схему для нового запроса и подтвердить по опубликованным сведениям расположение entity-данных и OWL RL-инференса. Пример в навыке условный: класс из default graph используется только если это подтверждено конфигурацией/схемой.
+- `list_ontologies` — опубликованные графы в `urn:bitrix24:ontology:`.
+- `describe_ontology` — опубликованный TBox по slug, при необходимости ограниченный URI класса.
+- `ontology_class_statistics` — агрегаты по namespace `ONTOLOGY_DATA_NAMESPACE`; возвращает область legacy REST и режим чтения.
+
+Встроенный помощник проектирования получает схему вызовами ontology MCP. AI Agent вкладки `/agent` запрашивает `explain_schema` по необходимости. `sparql_select` выключен по умолчанию двумя независимыми флагами: `MCP_ENABLE_SAFE_SPARQL=0` и `AGENT_ALLOW_SPARQL=0`. Включение только агентного флага не обходит серверную проверку MCP. В projection mode транспорт использует отдельные `MCP_SAFE_SPARQL_URL` и `MCP_SAFE_SPARQL_REPOSITORY`, read-only учётную запись и свежую policy с точными URI. В synthetic mode policy не нужна, но endpoint и repository тоже задаются отдельно. В обоих режимах требуется bearer token. Projection mode поддерживает ограниченный агрегирующий `COUNT(DISTINCT)` с опубликованными правилами и измерениями; synthetic mode допускает ограниченные SELECT и строки внутри настроенного repository.
+
+В режиме аналитической проекции выполнение именованных шаблонов возвращает `data_policy_unapproved`. Метаданные шаблонов и `entity_properties` остаются доступными как справка.
+
+### Синтетический стенд и откат
+
+Для отладки на полностью синтетическом репозитории доступен отдельный режим `MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY=1`. Задайте его для MCP и агента вместе с `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1` и `MCP_AUTH_TOKEN`. Направьте `MCP_SAFE_SPARQL_URL` и `MCP_SAFE_SPARQL_REPOSITORY` на нужное хранилище и задайте отдельные учётные данные только для чтения. В этом режиме `MCP_SAFE_SPARQL_POLICY_JSON` не требуется.
+
+Запрос может читать любые классы и свойства выбранного репозитория и связывать именованные графы через `GRAPH`. `MCP_SAFE_SPARQL_MAX_ROWS` задаёт предел строк ответа `sparql_select` от 1 до 100, по умолчанию 100. Меньший явный `LIMIT` сохраняется. При большем `LIMIT` или его отсутствии сервер читает до одной дополнительной строки для признака `truncated`. В режиме проекции также действует меньшее значение `max_rows` из политики. Запросы с `SERVICE`, `FROM`, `OFFSET` и функциями по URI отклоняются. Агент передаёт проверенные строки синтетической выборки модели и интерфейсу. Для отключения установите `MCP_ENABLE_SAFE_SPARQL=0` и `AGENT_ALLOW_SPARQL=0`.
+
+Если на выделенном синтетическом GraphDB отключена аутентификация, установите `MCP_SAFE_SPARQL_SYNTHETIC_ANONYMOUS=1` для MCP-сервиса. Он использует заданные адрес и repository без учётных данных GraphDB. Ограничение SELECT обеспечивает MCP. Доступ safe-инструмента по-прежнему требует `MCP_AUTH_TOKEN`. В режиме аналитической проекции этот флаг не применяется.
+
+В этом же режиме агент может запускать шаблоны через `run_named_query` по точным именам из `list_queries`. Шаблоны читают тот же синтетический репозиторий через тот же транспорт. Укажите префикс графов в `MCP_SAFE_SPARQL_GRAPH_PREFIX`, если он отличается от `GRAPH_PREFIX`. Встроенные фильтры и лимиты шаблонов сохраняются. Шаблоны без своего лимита ограничены 100 строками.
+
+### Режим аналитической проекции
+
+Для аналитической проекции создайте отдельный GraphDB repository. Настройте GraphDB query timeout, read-only пользователя только с `READ_REPO_<имя_репозитория>`, отдельные `MCP_SAFE_SPARQL_*`, свежую policy с точными URI и `MCP_AUTH_TOKEN`. Включите `MCP_ENABLE_SAFE_SPARQL=1` на MCP и `AGENT_ALLOW_SPARQL=1` на агенте. Полный справочник параметров и режимов — в [документации конфигурации](docs/CONFIGURATION.md), шаблон — в [`.env.example`](.env.example). Быстрый откат — установить оба флага в `0`; прямой `tools/call` ответит `disabled`. Не переносите синтетическую policy или конфигурацию на реальные данные.
+
+Каталог MCP синхронизируется с коллекцией `queries/*.rq`. Запросы с пометкой `# @mcp-query` появляются в `list_queries`. Имя берётся из имени файла без `.rq`, описание — из комментариев начиная с `# @mcp-description:`, параметры — из плейсхолдеров шаблона.
 
 ## Подключение из MCP‑клиентов (Zoo Code / Roo)
 
@@ -29,26 +55,7 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 
 ## Переменные окружения
 
-Параметры GraphDB те же, что у dashboard:
-
-- `RDF_BACKEND` — `graphdb` или `fuseki`
-- `RDF_URL` — URL GraphDB/Fuseki
-- `GRAPHDB_REPOSITORY` — имя репозитория GraphDB
-- `RDF_USERNAME`, `RDF_PASSWORD`
-- `RDF_TIMEOUT`
-- `GRAPH_PREFIX`
-
-Параметры MCP:
-
-- `MCP_HOST` — хост, по умолчанию `127.0.0.1`
-- `MCP_PORT` — порт, по умолчанию `8090`
-- `MCP_MAX_ROWS` — верхний лимит строк (если в запросе нет `LIMIT`)
-- `MCP_MAX_RESPONSE_BYTES` — лимит размера ответа JSON
-- `AGENT_MCP_URL` — отдельный URL MCP для агента (например, `http://127.0.0.1:8090`)
-- `AGENT_ALLOW_SPARQL` — разрешить агенту `sparql_select` (по умолчанию выключен)
-- `AGENT_DEBUG` — логировать вызовы MCP агентом
-
-Шаблон: [` .env.example`](.env.example)
+Все переменные, их значения по умолчанию и различия между projection/synthetic режимами описаны в [справочнике конфигурации](docs/CONFIGURATION.md). Используйте [`.env.example`](.env.example) как полный шаблон. `MCP_MAX_ROWS`, `MCP_MAX_RESPONSE_BYTES` и `MCP_DEBUG` текущим сервером безопасного SPARQL не читаются; используйте `MCP_SAFE_SPARQL_MAX_ROWS`, `MCP_SAFE_SPARQL_DB_TIMEOUT` и `MCP_SAFE_SPARQL_APP_TIMEOUT`.
 
 ## Локальный запуск
 
@@ -105,15 +112,22 @@ python -m mcp.profile_graphdb \
 Для нестандартного порта задайте `--url`, а для другого расположения журнала
 (в том числе при запуске в контейнере) передайте путь к активному файлу через
 `--mcp-log`. По умолчанию используются параметры шаблонов из MCP.
-`--params-file` принимает JSON вида
-`{"red_deals":{"selected_project":"all"}}`.
+`--params-file` принимает JSON, где ключи — имена запросов, значения — их параметры. Например, для полного профиля с обязательными `as_of`:
 
-Текущий профиль полного набора: 12 запросов — `active_deals_by_category`,
-`activities_last_7d_by_user`, `categories`, `deal_activity_distribution`,
-`employee_metrics`, `lead_conversion_trend`, `lead_employee_pulse`,
-`lead_lifecycle`, `leads_by_source`, `pulse_summary`, `recent_activities`,
-`red_deals`. Настройки: 3 разогревочных и 50 измеряемых вызовов на запрос
-(600 измеряемых + 36 разогревочных), пауза 0,5 с, timeout 90 с, seed 42.
+```json
+{
+  "lead_response_cohort": {"as_of": "2026-11-23T12:00:00Z"},
+  "lead_red_queue": {"as_of": "2026-11-23T12:00:00Z"}
+}
+```
+
+Коллекция MCP содержит 12 запросов — `categories`, `deal_activity_distribution`,
+`employee_activity_people`, `employee_metrics`, `employee_recent_activities`,
+`lead_conversion_trend`, `lead_employee_pulse`, `lead_red_queue`,
+`lead_response_cohort`, `pulse_summary`, `recent_activities`, `red_deals`.
+Исторический профиль ниже содержит прежние 12 запросов; настройки были
+3 разогревочных и 50 измеряемых вызовов на запрос (600 измеряемых + 36
+разогревочных), пауза 0,5 с, timeout 90 с, seed 42.
 Для сокращённого прогона укажите один или несколько `--template <имя>` и/или
 уменьшите `--repeats`; сравнивая результаты, фиксируйте этот состав и число.
 
@@ -122,7 +136,8 @@ python -m mcp.profile_graphdb \
 измеряемых вызовов успешны. `lead_lifecycle` стабильно медленный: медиана
 9,13 с, p95 9,28 с. У большинства прочих запросов медиана около 8–147 мс;
 при этом встречаются одиночные задержки до 11,6 с на разных шаблонах. Это
-указывает как на отдельную дорогую выборку `lead_lifecycle`, так и на
+указывает как на отдельную дорогую выборку `lead_lifecycle` (этот запрос удалён
+из текущей MCP-коллекции), так и на
 периодические задержки GraphDB, затрагивающие разные запросы. Файл
 `graphdb-benchmark-3.json` получен на другом, устаревшем экземпляре репозитория
 и для сравнения с `bitrix24_v2_parallel_2` не используется.

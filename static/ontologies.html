@@ -16,6 +16,18 @@
   </header>
   <nav class="page-nav" aria-label="Страницы дашборда"><a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a><a href="/agent">AI Agent</a><a class="active" href="/ontologies">Онтологии</a></nav>
   <div id="notice" class="error-banner" role="status" hidden></div>
+  <dialog id="delete-confirm-dialog" class="ontology-confirm-dialog" aria-labelledby="delete-confirm-title">
+    <div class="ontology-confirm-content">
+      <h2 id="delete-confirm-title">Подтвердить удаление</h2>
+      <p id="delete-confirm-summary" class="panel-subtitle"></p>
+      <label class="fingerprint-label" for="delete-confirm-fingerprint">Fingerprint графа</label>
+      <div class="fingerprint-row"><pre id="delete-confirm-fingerprint" tabindex="0"></pre><button id="copy-delete-fingerprint" class="secondary-button" type="button">Копировать</button></div>
+      <p id="copy-fingerprint-status" class="panel-subtitle" aria-live="polite"></p>
+      <label for="delete-confirm-slug">Введите slug для подтверждения<input id="delete-confirm-slug" autocomplete="off" spellcheck="false"></label>
+      <p id="delete-confirm-hint" class="panel-subtitle">Кнопка станет активной после точного ввода slug или успешного копирования fingerprint.</p>
+      <div class="header-actions ontology-actions"><button id="cancel-delete-ontology" class="secondary-button" type="button">Отмена</button><button id="confirm-delete-ontology" class="secondary-button" type="button" disabled>Удалить в карантин</button></div>
+    </div>
+  </dialog>
 
   <div class="ontology-admin-layout">
   <div class="ontology-left-column">
@@ -24,6 +36,7 @@
     <div class="ontology-workspace">
       <aside class="ontology-sidebar">
         <h3>Онтологии</h3><div id="file-list" class="ontology-list"></div>
+        <hr><h3>Карантин</h3><p class="panel-subtitle">TTL, ревизии и снимок опубликованного графа хранятся ограниченный срок.</p><div id="quarantine-list" class="ontology-list"></div>
         <hr>
         <label>Новый slug<input id="new-slug" placeholder="foo-classification"></label>
         <label>Загрузить локальный .ttl<input id="file-input" type="file" accept=".ttl,text/turtle"></label>
@@ -32,7 +45,7 @@
       <div class="ontology-editor-column">
         <div id="current-meta" class="empty-state">Выберите файл или укажите slug нового файла.</div>
         <textarea id="editor" spellcheck="false" aria-label="Редактор Turtle" rows="24"></textarea>
-        <div class="header-actions ontology-actions"><button id="validate" class="secondary-button" type="button">Проверить</button><button id="save" class="secondary-button" type="button">Сохранить</button><button id="publish" class="secondary-button" type="button">Опубликовать сохранённую версию</button></div>
+        <div class="header-actions ontology-actions"><button id="validate" class="secondary-button" type="button">Проверить</button><button id="save" class="secondary-button" type="button">Сохранить</button><button id="publish" class="secondary-button" type="button">Опубликовать сохранённую версию</button><button id="rollback" class="secondary-button" type="button">Откатить публикацию</button><button id="delete-ontology" class="secondary-button" type="button">Удалить в карантин</button></div>
         <p id="publish-status" class="panel-subtitle">Статус: не опубликовано (пока не проверено)</p>
       </div>
     </div>

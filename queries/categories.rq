@@ -1,3 +1,6 @@
+# @mcp-query
+# @mcp-description: Возвращает справочник воронок: код категории и её название.
+# Не содержит сделок или счётчиков; используйте коды из результата как selected_project в запросах с фильтром.
 PREFIX b24: <https://example.org/bitrix24#>
 
 SELECT DISTINCT ?category_code ?category_name

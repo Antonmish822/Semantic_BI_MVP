@@ -44,7 +44,7 @@ function applyViewProfile(payload) {
   const profile = payload?.view_profile || {};
   const order = Array.isArray(profile.block_order) ? profile.block_order : [];
   const highlights = new Set(Array.isArray(profile.highlights) ? profile.highlights : []);
-  const blocks = Array.from(container.querySelectorAll('[data-block]'));
+  const blocks = Array.from(document.querySelectorAll('#leads-tab-panel [data-block], #summaries-tab-panel [data-block]'));
   const orderIndex = new Map(order.map((key, index) => [String(key), index]));
   blocks.forEach((block) => {
     const name = block.dataset.block || '';
@@ -110,7 +110,7 @@ function leadSourceCell(lead) {
   return cell;
 }
 
-function renderTrendChart(points, hostId, emptyId, valueKey, unitLabel) {
+function renderTrendChart(points, hostId, emptyId, valueKey, unitLabel, options = {}) {
   const host = byId(hostId);
   host.replaceChildren();
   const valid = points.filter((point) => point[valueKey] != null);
@@ -127,7 +127,7 @@ function renderTrendChart(points, hostId, emptyId, valueKey, unitLabel) {
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
   const maxValue = Math.max(...valid.map((point) => Number(point[valueKey])), 1);
-  const yMax = maxValue * 1.08;
+  const yMax = options.maxValue ?? maxValue * 1.08;
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -147,7 +147,8 @@ function renderTrendChart(points, hostId, emptyId, valueKey, unitLabel) {
     const value = yMax * tick / 4;
     const yPos = y(value);
     svg.append(element('line', { x1: left, x2: width - right, y1: yPos, y2: yPos, class: 'chart-gridline' }));
-    svg.append(element('text', { x: left - 10, y: yPos + 4, class: 'chart-axis-label', 'text-anchor': 'end' }, formatDuration(value)));
+    const tickLabel = options.tickFormatter ? options.tickFormatter(value) : formatDuration(value);
+    svg.append(element('text', { x: left - 10, y: yPos + 4, class: 'chart-axis-label', 'text-anchor': 'end' }, tickLabel));
   }
 
   let segment = [];
@@ -172,7 +173,10 @@ function renderTrendChart(points, hostId, emptyId, valueKey, unitLabel) {
     const date = new Date(`${point.date}T00:00:00`);
     const label = Number.isNaN(date.getTime()) ? point.date : new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short' }).format(date);
     const circle = element('circle', { cx: px, cy: py, r: 2.4, class: 'response-trend-point' });
-    circle.append(element('title', {}, `${label}: ${formatDuration(value)} · ${numberFormat.format(point.sample_size || 0)} ${unitLabel}`));
+    const tooltip = options.tooltipFormatter
+      ? options.tooltipFormatter(point, label)
+      : `${label}: ${formatDuration(value)} · ${numberFormat.format(point.sample_size || 0)} ${unitLabel}`;
+    circle.append(element('title', {}, tooltip));
     svg.append(circle);
   });
   flushSegment();
@@ -204,9 +208,16 @@ function render(data) {
   byId('created-30d').textContent = numberFormat.format(summary.created_30d || 0);
   byId('average-response').textContent = formatDuration(summary.average_response_minutes);
   byId('response-sample').textContent = `До первой активности · выборка ${numberFormat.format(summary.response_sample_size || 0)} лидов за 30 дней`;
-  byId('average-conversion').textContent = formatDays(summary.average_conversion_days);
-  byId('conversion-sample').textContent = `До связанной сделки P · выборка ${numberFormat.format(summary.conversion_sample_size || 0)} лидов`;
-  renderTrendChart(data.response_trend || [], 'response-trend-chart', 'response-trend-empty', 'average_response_minutes', 'лидов');
+  const slaRatio = summary.sla_within_2h_ratio;
+  byId('sla-within-2h').textContent = slaRatio == null
+    ? 'Нет данных'
+    : new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(slaRatio);
+  byId('sla-sample').textContent = `${numberFormat.format(summary.sla_within_2h_count || 0)} из ${numberFormat.format(summary.sla_eligible_count || 0)} лидов · прошло не менее 2 часов`;
+  renderTrendChart(data.response_trend || [], 'sla-trend-chart', 'sla-trend-empty', 'sla_within_2h_ratio', '', {
+    maxValue: 1,
+    tickFormatter: (value) => `${Math.round(value * 100)}%`,
+    tooltipFormatter: (point, label) => `${label}: ${numberFormat.format(point.sla_within_2h_count || 0)} из ${numberFormat.format(point.sla_eligible_count || 0)} · ${point.sla_within_2h_ratio == null ? 'нет данных' : new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(point.sla_within_2h_ratio)}`,
+  });
   byId('updated').textContent = `Обновлено ${formatDate(data.as_of)}`;
   byId('connection').className = 'connection online';
   byId('connection').lastElementChild.textContent = data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён';
@@ -272,6 +283,19 @@ async function load() {
   }
 }
 
+function selectLeadsTab(tab) {
+  const summaries = tab === 'summaries';
+  byId('leads-tab-panel').hidden = summaries;
+  byId('summaries-tab-panel').hidden = !summaries;
+  byId('leads-tab').classList.toggle('active', !summaries);
+  byId('leads-tab').setAttribute('aria-pressed', String(!summaries));
+  byId('summaries-tab').classList.toggle('active', summaries);
+  byId('summaries-tab').setAttribute('aria-pressed', String(summaries));
+  if (summaries) loadConversionTrend();
+}
+
+byId('leads-tab').addEventListener('click', () => selectLeadsTab('leads'));
+byId('summaries-tab').addEventListener('click', () => selectLeadsTab('summaries'));
 byId('refresh').addEventListener('click', () => {
   load();
   loadConversionTrend();

@@ -1,3 +1,7 @@
+# @mcp-query
+# @mcp-description: Возвращает активные сделки P с category_code и исходным lastActivityTime.
+# Само распределение по временным корзинам не вычисляется; сгруппируйте даты на стороне клиента.
+# Подходит для построения графика давности последней активности; отсутствующая дата остаётся пустой.
 PREFIX b24: <https://example.org/bitrix24#>
 
 SELECT ?deal ?last_activity_raw ?category_code

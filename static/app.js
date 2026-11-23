@@ -98,8 +98,8 @@ function renderPulse(data) {
   value('created-24h', summary.created_24h);
   value('created-7d', summary.created_7d);
   value('created-30d', summary.created_30d);
-  value('inactive-7d', summary.inactive_7d);
-  byId('red-count').textContent = numberFormat.format(Number(summary.inactive_7d ?? 0));
+  value('red-deals-count', summary.red_deals_count);
+  byId('red-count').textContent = numberFormat.format(Number(summary.red_deals_count ?? 0));
   byId('updated').textContent = `Обновлено ${formatDate(data.as_of)}`;
   byId('connection').className = 'connection online';
   byId('connection').lastElementChild.textContent = data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён';
@@ -116,18 +116,6 @@ function renderCategories(categories) {
   }
   select.replaceChildren(...options);
   select.value = categories.some((item) => item.id === selected) ? selected : 'all';
-}
-
-function renderDistributionCategories(categories) {
-  const select = byId('activity-distribution-category');
-  const selected = select.value || 'all';
-  const options = [new Option('Все категории', 'all')];
-  for (const category of categories) {
-    options.push(new Option(category.name || `Категория ${category.id}`, category.id));
-  }
-  select.replaceChildren(...options);
-  select.value = categories.some((item) => item.id === selected) ? selected : 'all';
-  return select.value;
 }
 
 function renderActivityDistribution(data) {
@@ -194,15 +182,11 @@ async function loadActivityDistribution() {
   byId('activity-distribution-loading').hidden = false;
   byId('activity-distribution-empty').hidden = true;
   try {
-    const project = byId('activity-distribution-category').value || 'all';
+    const project = selectedProject();
     const response = await fetch(`/api/deal-activity-distribution?project=${encodeURIComponent(project)}`, { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Не удалось получить распределение сделок');
     if (requestId !== activityDistributionRequest) return;
-    if (renderDistributionCategories(data.categories || []) !== project) {
-      loadActivityDistribution();
-      return;
-    }
     renderActivityDistribution(data);
   } catch (error) {
     if (requestId !== activityDistributionRequest) return;
@@ -231,6 +215,37 @@ function renderRedDeals(deals) {
   }
   byId('red-empty').hidden = true;
   byId('red-table').hidden = false;
+  const activityCell = (at, subject, responsible, uri) => {
+    const cell = document.createElement('td');
+    if (!at) {
+      cell.textContent = 'Не найдена';
+      cell.className = 'muted-cell';
+      return cell;
+    }
+    const date = document.createElement('span');
+    date.className = 'activity-subject';
+    date.textContent = formatDate(at);
+    cell.append(date);
+    if (subject) {
+      const label = document.createElement('span');
+      label.className = 'activity-employee';
+      label.textContent = subject;
+      cell.append(label);
+    }
+    if (responsible) {
+      const person = document.createElement('span');
+      person.className = 'activity-uri';
+      person.textContent = responsible;
+      cell.append(person);
+    }
+    if (uri) {
+      const id = document.createElement('span');
+      id.className = 'activity-uri';
+      id.textContent = `Activity ${tail(uri)}`;
+      cell.append(id);
+    }
+    return cell;
+  };
   for (const deal of deals) {
     const row = document.createElement('tr');
     const title = document.createElement('td');
@@ -245,6 +260,8 @@ function renderRedDeals(deals) {
     row.append(td(deal.manager || 'Не назначен'));
     row.append(td(formatDate(deal.created_at)));
     row.append(td(formatDate(deal.last_activity_time), 'muted-cell'));
+    row.append(activityCell(deal.binding_activity_at, deal.binding_activity_subject, deal.binding_activity_responsible, deal.binding_activity_uri));
+    row.append(activityCell(deal.owner_activity_at, deal.owner_activity_subject, deal.owner_activity_responsible, deal.owner_activity_uri));
     body.append(row);
   }
 }
@@ -321,7 +338,7 @@ async function loadPulse() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Не удалось получить данные');
     renderPulse(data);
-    loadActivityDistribution();
+    if (byId('summaries-tab').getAttribute('aria-pressed') === 'true') loadActivityDistribution();
     loadViewState();
   } catch (error) {
     byId('connection').className = 'connection offline';
@@ -367,8 +384,23 @@ function selectedProject() {
   return byId('project-filter').value || 'all';
 }
 
+function selectDealsTab(tab) {
+  const summaries = tab === 'summaries';
+  byId('deals-tab-panel').hidden = summaries;
+  byId('summaries-tab-panel').hidden = !summaries;
+  byId('deals-tab').classList.toggle('active', !summaries);
+  byId('deals-tab').setAttribute('aria-pressed', String(!summaries));
+  byId('summaries-tab').classList.toggle('active', summaries);
+  byId('summaries-tab').setAttribute('aria-pressed', String(summaries));
+  if (summaries) loadActivityDistribution();
+}
+
+byId('deals-tab').addEventListener('click', () => selectDealsTab('deals'));
+byId('summaries-tab').addEventListener('click', () => selectDealsTab('summaries'));
+
 byId('refresh').addEventListener('click', () => {
   loadPulse();
+  if (byId('summaries-tab').getAttribute('aria-pressed') === 'true') loadActivityDistribution();
   if (byId('toggle-red').getAttribute('aria-expanded') === 'true') loadRedDeals();
   if (byId('toggle-activities').getAttribute('aria-expanded') === 'true') loadRecentActivities();
 });
@@ -391,16 +423,17 @@ byId('toggle-activities').addEventListener('click', () => {
 byId('project-filter').addEventListener('change', () => {
   loadPulse();
   loadViewState();
+  if (byId('summaries-tab').getAttribute('aria-pressed') === 'true') loadActivityDistribution();
   if (byId('toggle-red').getAttribute('aria-expanded') === 'true') loadRedDeals();
   if (byId('toggle-activities').getAttribute('aria-expanded') === 'true') loadRecentActivities();
 });
-byId('activity-distribution-category').addEventListener('change', loadActivityDistribution);
 
 loadPulse();
 loadViewState();
 window.setInterval(() => {
   loadPulse();
   loadViewState();
+  if (byId('summaries-tab').getAttribute('aria-pressed') === 'true') loadActivityDistribution();
   if (byId('toggle-red').getAttribute('aria-expanded') === 'true') loadRedDeals();
   if (byId('toggle-activities').getAttribute('aria-expanded') === 'true') loadRecentActivities();
 }, 60_000);

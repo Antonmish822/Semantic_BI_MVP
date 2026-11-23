@@ -1,0 +1,33 @@
+# @mcp-query
+# @mcp-description: Возвращает сотрудников, у которых есть активности в выбранной воронке; используется для фильтрации журнала активностей.
+# selected_project — код воронки или all (по умолчанию all). Для all включает сотрудников с любыми активностями.
+# Выдаёт URI и имя сотрудника, без счётчиков и списка активностей.
+PREFIX b24: <https://example.org/bitrix24#>
+
+SELECT ?employee (MIN(STR(?name_value)) AS ?employee_name)
+WHERE {
+  VALUES ?selected_project { {{selected_project}} }
+  GRAPH ?activity_graph {
+    ?activity b24:responsible ?employee .
+  }
+  FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
+         && CONTAINS(STR(?activity_graph), ":activity:"))
+  FILTER(?selected_project = "all" || EXISTS {
+    GRAPH ?category_activity_graph {
+      ?activity b24:owner ?owner ; b24:ownerTypeId "2" .
+    }
+    FILTER(STRSTARTS(STR(?category_activity_graph), {{graph_prefix}})
+           && CONTAINS(STR(?category_activity_graph), ":activity:"))
+    GRAPH ?category_deal_graph { ?owner b24:categoryCode ?activity_category_code }
+    FILTER(STRSTARTS(STR(?category_deal_graph), {{graph_prefix}})
+           && CONTAINS(STR(?category_deal_graph), ":deal:")
+           && STR(?activity_category_code) = ?selected_project)
+  })
+  OPTIONAL {
+    GRAPH ?user_graph { ?employee b24:fullName ?name_value }
+    FILTER(STRSTARTS(STR(?user_graph), {{graph_prefix}})
+           && CONTAINS(STR(?user_graph), ":user:"))
+  }
+}
+GROUP BY ?employee
+ORDER BY LCASE(STR(?employee_name)) STR(?employee)

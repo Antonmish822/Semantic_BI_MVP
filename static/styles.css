@@ -30,6 +30,11 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -.03em; }
 .page-nav a { padding: 9px 12px 11px; color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 650; border-bottom: 2px solid transparent; }
 .page-nav a:hover { color: var(--ink); }
 .page-nav a.active { color: var(--teal); border-bottom-color: var(--teal); }
+.section-tabs { display: flex; gap: 7px; margin: -24px 0 20px; border-bottom: 1px solid var(--line); }
+.section-tab { padding: 9px 12px 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; }
+.section-tab:hover { color: var(--ink); }
+.section-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+.tab-content[hidden] { display: none; }
 .connection { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .connection i { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: var(--amber); }
 .connection.online i { background: var(--teal); box-shadow: 0 0 0 3px var(--teal-soft); }
@@ -182,6 +187,7 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
   .header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 9px 12px; }
   .updated { display: none; }
   .page-nav { margin-top: -14px; }
+  .section-tabs { margin-top: -19px; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .metric-card { min-height: 117px; padding: 15px; }
@@ -212,6 +218,17 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .ontology-list .secondary-button { width:100%; justify-content:flex-start; }
 #editor { box-sizing:border-box; width:100%; min-height:440px; padding:14px; border:1px solid var(--line); border-radius:10px; background:#fbfcfc; color:var(--ink); font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical; }
 .ontology-actions { margin-top:12px; flex-wrap:wrap; }
+.ontology-confirm-dialog { width:min(680px, calc(100vw - 32px)); max-width:none; padding:0; border:1px solid var(--line); border-radius:14px; color:var(--ink); background:var(--paper); box-shadow:0 24px 80px #102a3a40; }
+.ontology-confirm-dialog::backdrop { background:#102a3a80; }
+.ontology-confirm-content { padding:24px; }
+.ontology-confirm-content h2 { margin-bottom:12px; }
+.ontology-confirm-content label { display:block; margin-top:16px; color:var(--ink); font-size:12px; font-weight:650; }
+.fingerprint-label { margin-bottom:7px; }
+.fingerprint-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:9px; align-items:start; }
+.fingerprint-row pre { min-width:0; max-height:130px; overflow:auto; margin:0; padding:12px; border:1px solid var(--line); border-radius:9px; background:var(--canvas); color:var(--ink); font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; overflow-wrap:anywhere; white-space:pre-wrap; user-select:text; -webkit-user-select:text; }
+.ontology-confirm-content input { width:100%; margin-top:7px; padding:10px 11px; border:1px solid var(--line); border-radius:8px; color:var(--ink); background:var(--paper); font:inherit; }
+.ontology-confirm-content .ontology-actions { justify-content:flex-end; margin-top:20px; }
+.ontology-confirm-dialog .secondary-button:disabled { opacity:.52; cursor:not-allowed; }
 .class-statistics-form { display:grid; gap:8px; margin-bottom:14px; }
 .class-statistics-form label { font-size:12px; font-weight:700; }
 .class-statistics-form input { box-sizing:border-box; width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; color:var(--ink); font:inherit; }

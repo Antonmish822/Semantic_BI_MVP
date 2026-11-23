@@ -1,3 +1,7 @@
+# @mcp-query
+# @mcp-description: Возвращает 20 последних активностей, привязанных к сделкам (ownerTypeId 2).
+# Включает тему, дату, сделку, её стадию и ответственного; сортировка по времени убыванию.
+# selected_project — код воронки или all (по умолчанию all); другие типы CRM-активностей исключены.
 PREFIX b24: <https://example.org/bitrix24#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
