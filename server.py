@@ -21,11 +21,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies,
-                            ontology_uri, parse_ttl, publish, read_ontology, save_text)
+from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies, publication_history, read_revision,
+                            ontology_uri, parse_ttl, publish, read_ontology, save_text,
+                            ontology_delete_preview, delete_ontology, list_quarantine, restore_quarantined,
+                            purge_expired_quarantine)
 from ontology_assistant import (MAX_ASSISTANT_BODY, AssistantError, assistant_config,
                                 suggest as suggest_ontology, version_for)
 from rdflib import Graph
+from ontology import class_statistics
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -39,6 +42,7 @@ CACHE: dict[str, object] = {
     "red_deals": {},
     "recent_activities_at": 0.0,
     "recent_activities": {},
+    "employee_recent_activities": {},
     "lead_pulse_at": 0.0,
     "lead_pulse": None,
     "lead_conversion_trend": {},
@@ -56,8 +60,11 @@ DEFAULT_RULES: dict[str, object] = {
             "required_entities": ["Deal", "Activity", "Category", "User"],
             "required_features": [
                 "deal.stageSemantic",
+                "deal.createdAt",
                 "deal.lastActivityTime",
                 "deal.assignedTo",
+                "activity.bindingDeal",
+                "activity.owner",
                 "activity.ownerTypeId",
                 "activity.createdAt",
             ],
@@ -65,7 +72,7 @@ DEFAULT_RULES: dict[str, object] = {
                 {
                     "id": "red_deals_spike",
                     "title": "Всплеск красных сделок",
-                    "description": "Доля красных сделок превышает порог за последнюю неделю.",
+                    "description": "Доля сделок старше 10 дней без активности после первых суток составляет не менее 18%.",
                     "priority": 100,
                     "when": {
                         "metric": "red_deals_ratio",
@@ -75,7 +82,6 @@ DEFAULT_RULES: dict[str, object] = {
                     "effect": {
                         "promote_blocks": ["red_deals", "deal_activity_distribution"],
                         "highlights": ["red_deals"],
-                        "default_filters": {"project": "nonempty"},
                     },
                 },
                 {
@@ -167,7 +173,6 @@ DEFAULT_RULES: dict[str, object] = {
                     "effect": {
                         "promote_blocks": ["employees_table"],
                         "highlights": ["employees_table"],
-                        "default_filters": {"project": "nonempty"},
                     },
                 }
             ],
@@ -611,9 +616,11 @@ def load_query(name: str, graph_prefix: str) -> str:
 
 
 class RDFStoreClient:
-    def __init__(self, backend: str, query_url: str, username: str,
-                 password: str, graph_prefix: str, timeout: float) -> None:
+    def __init__(self, backend: str, base_url: str, repository: str, query_url: str,
+                 username: str, password: str, graph_prefix: str, timeout: float) -> None:
         self.backend = backend
+        self.base_url = base_url
+        self.repository = repository
         self.query_url = query_url
         self.username = username
         self.password = password
@@ -649,7 +656,7 @@ class RDFStoreClient:
             "created_24h": value_int(row, "created_24h"),
             "created_7d": value_int(row, "created_7d"),
             "created_30d": value_int(row, "created_30d"),
-            "inactive_7d": value_int(row, "inactive_7d"),
+            "red_deals_count": value_int(row, "red_deals_count"),
         }
         employees = []
         for item in employee_rows:
@@ -735,13 +742,32 @@ class RDFStoreClient:
         query = load_query("red_deals.rq", self.graph_prefix)
         query = query.replace("{{selected_project}}", sparql_literal(project))
         rows = self.select(query)
-        return [{
-            "uri": value_text(row, "deal"),
-            "title": value_text(row, "title") or "Без названия",
-            "manager": value_text(row, "manager_name") or employee_label(value_text(row, "assigned_to")),
-            "created_at": value_text(row, "created_at"),
-            "last_activity_time": value_text(row, "last_activity_time"),
-        } for row in rows]
+        deals = []
+        for row in rows:
+            binding_uri = value_text(row, "binding_activity")
+            owner_uri = value_text(row, "owner_activity")
+            deals.append({
+                "uri": value_text(row, "deal"),
+                "title": value_text(row, "title") or "Без названия",
+                "manager": value_text(row, "manager_name") or employee_label(value_text(row, "assigned_to")),
+                "created_at": value_text(row, "created_at"),
+                "last_activity_time": value_text(row, "last_activity_time"),
+                "binding_activity_uri": binding_uri,
+                "binding_activity_at": value_text(row, "binding_activity_at"),
+                "binding_activity_subject": value_text(row, "binding_subject"),
+                "binding_activity_responsible": (
+                    value_text(row, "binding_responsible_name")
+                    or employee_label(value_text(row, "binding_responsible"))
+                ) if binding_uri else None,
+                "owner_activity_uri": owner_uri,
+                "owner_activity_at": value_text(row, "owner_activity_at"),
+                "owner_activity_subject": value_text(row, "owner_subject"),
+                "owner_activity_responsible": (
+                    value_text(row, "owner_responsible_name")
+                    or employee_label(value_text(row, "owner_responsible"))
+                ) if owner_uri else None,
+            })
+        return deals
 
     def recent_activities(self, project: str = "all") -> list[dict[str, str | None]]:
         query = load_query("recent_activities.rq", self.graph_prefix)
@@ -767,63 +793,116 @@ class RDFStoreClient:
             })
         return activities
 
+    def employee_recent_activities(self, project: str = "all", employee: str = "all") -> dict[str, object]:
+        people_query = load_query("employee_activity_people.rq", self.graph_prefix)
+        people_query = people_query.replace("{{selected_project}}", sparql_literal(project))
+        people_rows = self.select(people_query)
+        employees = [{
+            "id": value_text(row, "employee"),
+            "name": value_text(row, "employee_name") or employee_label(value_text(row, "employee")),
+        } for row in people_rows if value_text(row, "employee")]
+
+        activities_query = load_query("employee_recent_activities.rq", self.graph_prefix)
+        activities_query = activities_query.replace("{{selected_project}}", sparql_literal(project))
+        activities_query = activities_query.replace("{{selected_employee}}", sparql_literal(employee))
+        activity_rows = self.select(activities_query)
+        activities = [{
+            "uri": value_text(row, "activity"),
+            "created_at": value_text(row, "activity_at"),
+            "subject": value_text(row, "subject") or "Без темы",
+            "owner_uri": value_text(row, "owner"),
+            "owner_title": value_text(row, "owner_title") or "Без названия",
+            "employee_uri": value_text(row, "employee"),
+            "employee_name": value_text(row, "employee_name") or employee_label(value_text(row, "employee")),
+        } for row in activity_rows]
+        return {"employees": employees, "activities": activities}
+
     def lead_pulse(self) -> dict[str, object]:
-        rows = self.select(load_query("lead_lifecycle.rq", self.graph_prefix))
         now = datetime.now(timezone.utc)
-        red_leads = []
-        reactions = []
-        conversion_lifetimes = []
-        lead_observations = []
+        as_of = sparql_literal(now.isoformat()) + "^^xsd:dateTime"
+        cohort_query = load_query("lead_response_cohort.rq", self.graph_prefix)
+        if "{{as_of}}" not in cohort_query:
+            raise ValueError("lead_response_cohort.rq has no as_of marker")
+        cohort_rows = self.select(cohort_query.replace("{{as_of}}", as_of))
+
+        queue_query = load_query("lead_red_queue.rq", self.graph_prefix)
+        if "{{as_of}}" not in queue_query:
+            raise ValueError("lead_red_queue.rq has no as_of marker")
+        queue_rows = self.select(queue_query.replace("{{as_of}}", as_of))
+
+        observations: list[tuple[datetime, datetime | None]] = []
+        seen_leads: set[str] = set()
+        for row in cohort_rows:
+            lead_uri = value_text(row, "lead")
+            created_at = parse_rdf_datetime(value_text(row, "created_at"))
+            if not lead_uri or lead_uri in seen_leads or not created_at or created_at > now:
+                continue
+            seen_leads.add(lead_uri)
+            first_activity = parse_rdf_datetime(value_text(row, "first_activity_at"))
+            if first_activity and not (created_at <= first_activity <= now):
+                first_activity = None
+            observations.append((created_at, first_activity))
+
         counts = {"created_1d": 0, "created_7d": 0, "created_30d": 0}
         windows = {
             "created_1d": 1,
             "created_7d": 7,
             "created_30d": 30,
         }
-        for row in rows:
-            created_raw = value_text(row, "created_at")
-            created_at = parse_rdf_datetime(created_raw)
-            if not created_at or created_at > now:
-                continue
-            first_activity = parse_rdf_datetime(value_text(row, "first_activity_at"))
-            converted_at = parse_rdf_datetime(value_text(row, "converted_at"))
-            age_days = (now - created_at).total_seconds() / 86400
+        reactions = []
+        eligible_count = 0
+        sla_within_count = 0
+        for created_at, first_activity in observations:
             for key, days in windows.items():
-                if age_days <= days:
+                if now - timedelta(days=days) <= created_at <= now:
                     counts[key] += 1
-            if first_activity and created_at <= first_activity <= now and age_days <= 30:
+            if created_at >= now - timedelta(days=30) and first_activity:
                 reactions.append((first_activity - created_at).total_seconds() / 60)
-            if first_activity and created_at <= first_activity <= now:
-                lead_observations.append((created_at, first_activity))
-            if converted_at and created_at <= converted_at <= now:
-                conversion_lifetimes.append((converted_at - created_at).total_seconds() / 86400)
-            if (created_at <= now - timedelta(hours=2)
-                    and (value_text(row, "has_converted_deal") or "").lower() != "true"
-                    and (value_text(row, "status_code") or "").upper() != "CONVERTED"
-                    and (first_activity is None or first_activity > created_at + timedelta(hours=2))):
-                red_leads.append({
-                    "uri": value_text(row, "lead"),
-                    "title": value_text(row, "title") or "Без названия",
-                    "created_at": created_at.isoformat(),
-                    "source_code": value_text(row, "source_code"),
-                    "source_name": value_text(row, "source_name"),
-                    "manager": value_text(row, "manager_name") or "Не назначен",
-                })
-        red_leads.sort(key=lambda lead: lead["created_at"], reverse=True)
+            if (created_at >= now - timedelta(days=30)
+                    and created_at <= now - timedelta(hours=2)):
+                eligible_count += 1
+                if first_activity and first_activity <= created_at + timedelta(hours=2):
+                    sla_within_count += 1
+
+        red_leads = []
+        for row in queue_rows:
+            created_at = parse_rdf_datetime(value_text(row, "created_at"))
+            if not created_at:
+                continue
+            red_leads.append({
+                "uri": value_text(row, "lead"),
+                "title": value_text(row, "title") or "Без названия",
+                "created_at": created_at.isoformat(),
+                "source_code": value_text(row, "source_code"),
+                "source_name": value_text(row, "source_name"),
+                "manager": value_text(row, "manager_name") or "Не назначен",
+            })
+
         response_trend = []
         trend_start = now - timedelta(days=89)
         for day in range(90):
             point_at = trend_start + timedelta(days=day)
             cohort_start = point_at - timedelta(days=30)
+            cohort = [(created_at, first_activity) for created_at, first_activity in observations
+                      if cohort_start <= created_at <= point_at]
             durations = [
                 (first_activity - created_at).total_seconds() / 60
-                for created_at, first_activity in lead_observations
-                if cohort_start <= created_at <= point_at and first_activity <= point_at
+                for created_at, first_activity in cohort
+                if first_activity and created_at <= first_activity <= point_at
             ]
+            sla_eligible = [(created_at, first_activity) for created_at, first_activity in cohort
+                            if created_at <= point_at - timedelta(hours=2)]
+            sla_count = sum(
+                1 for created_at, first_activity in sla_eligible
+                if first_activity and first_activity <= created_at + timedelta(hours=2)
+            )
             response_trend.append({
                 "date": point_at.date().isoformat(),
                 "average_response_minutes": average(durations),
                 "sample_size": len(durations),
+                "sla_within_2h_ratio": (sla_count / len(sla_eligible)) if sla_eligible else None,
+                "sla_within_2h_count": sla_count,
+                "sla_eligible_count": len(sla_eligible),
             })
         return {
             "available": True,
@@ -833,8 +912,11 @@ class RDFStoreClient:
                 **counts,
                 "average_response_minutes": average(reactions),
                 "response_sample_size": len(reactions),
-                "average_conversion_days": average(conversion_lifetimes),
-                "conversion_sample_size": len(conversion_lifetimes),
+                "sla_within_2h_ratio": (sla_within_count / eligible_count) if eligible_count else None,
+                "sla_within_2h_count": sla_within_count,
+                "sla_eligible_count": eligible_count,
+                "average_conversion_days": None,
+                "conversion_sample_size": 0,
             },
             "response_trend": response_trend,
             "red_leads": red_leads[:10],
@@ -1000,6 +1082,7 @@ def create_store_client(environ: dict[str, str] | None = None) -> RDFStoreClient
         query_url = f"{base_url}/repositories/{quote(repository, safe='')}"
     else:
         base_url = (env.get("RDF_URL") or "http://127.0.0.1:3030/Persistent").rstrip("/")
+        repository = ""
         query_url = base_url if base_url.endswith("/query") else base_url + "/query"
 
     parsed = urlsplit(base_url)
@@ -1010,6 +1093,8 @@ def create_store_client(environ: dict[str, str] | None = None) -> RDFStoreClient
         raise ValueError("RDF_TIMEOUT must be positive")
     return RDFStoreClient(
         backend=backend,
+        base_url=base_url,
+        repository=repository,
         query_url=query_url,
         username=env.get("RDF_USERNAME", ""),
         password=env.get("RDF_PASSWORD", ""),
@@ -1107,6 +1192,26 @@ def get_recent_activities(project: str = "all") -> list[dict[str, str | None]]:
         except GRAPH_QUERY_EXCEPTIONS:
             if cache_fallback_enabled() and cached_project is not None:
                 return cached_project[1]
+            raise
+
+
+def get_employee_recent_activities(project: str = "all", employee: str = "all") -> dict[str, object]:
+    now = time.monotonic()
+    key = f"{project}\0{employee}"
+    with CACHE_LOCK:
+        cached = CACHE.get("employee_recent_activities")
+        cache = cached if isinstance(cached, dict) else {}
+        cached_key = cache.get(key)
+        if cached_key is not None and now - cached_key[0] < CACHE_SECONDS:
+            return cached_key[1]
+        try:
+            payload = create_store_client().employee_recent_activities(project, employee)
+            cache[key] = (now, payload)
+            CACHE["employee_recent_activities"] = cache
+            return payload
+        except GRAPH_QUERY_EXCEPTIONS:
+            if cache_fallback_enabled() and cached_key is not None:
+                return cached_key[1]
             raise
 
 
@@ -1291,7 +1396,7 @@ def build_deals_metrics(project: str) -> dict[str, float | int | None]:
     pulse = get_pulse(project)
     summary = pulse.get("summary", {}) if isinstance(pulse, dict) else {}
     active_deals = int(summary.get("active_deals", 0)) if isinstance(summary, dict) else 0
-    red_count = len(get_red_deals(project))
+    red_count = int(summary.get("red_deals_count", 0)) if isinstance(summary, dict) else 0
     distribution = get_deal_activity_distribution(project)
     buckets = distribution.get("buckets", []) if isinstance(distribution, dict) else []
     stagnated = 0
@@ -1350,6 +1455,11 @@ def build_leads_metrics(category: str, employee: str) -> dict[str, float | int |
     avg_response = summary.get("average_response_minutes") if isinstance(summary, dict) else None
     return {
         "avg_response_minutes": float(avg_response) if isinstance(avg_response, (float, int)) else None,
+        "sla_within_2h_ratio": (
+            float(summary["sla_within_2h_ratio"])
+            if isinstance(summary, dict) and isinstance(summary.get("sla_within_2h_ratio"), (float, int))
+            else None
+        ),
         "response_trend_growth_ratio": compute_growth_ratio(response_values),
         "conversion_trend_growth_ratio": compute_growth_ratio(conversion_values),
         "employee_response_growth_ratio": compute_growth_ratio(employee_response_values),
@@ -1385,10 +1495,12 @@ def reorder_blocks(default_order: list[str], promoted: list[str]) -> list[str]:
 
 def default_block_order(page: str) -> list[str]:
     if page == "deals":
-        return ["kpi", "deal_activity_distribution", "red_deals", "recent_activities"]
+        return ["kpi", "red_deals", "recent_activities"]
     if page == "leads":
         return ["kpi", "red_leads", "conversion_trend", "response_trend"]
-    return ["employee_pulse", "employees_table"]
+    if page == "employees":
+        return ["employees_table", "employee_pulse"]
+    return ["employees_table"]
 
 
 def build_view_state(page: str, project: str, category: str, employee: str) -> dict[str, object]:
@@ -1441,7 +1553,7 @@ def build_view_state(page: str, project: str, category: str, employee: str) -> d
         })
 
     active_situations.sort(key=lambda x: int(x.get("priority", 0)), reverse=True)
-    block_order = reorder_blocks(default_block_order(page), promoted_blocks)
+    block_order = default_block_order(page) if page in {"deals", "leads", "employees"} else reorder_blocks(default_block_order(page), promoted_blocks)
 
     return {
         "available": True,
@@ -1607,19 +1719,31 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ontology-assistant/version":
             try:
                 params = parse_qs(urlsplit(self.path).query)
-                self._send_json(200, version_for(params.get("slug", [""])[0]))
+                slug = params.get("slug", [""])[0]
+                version = version_for(slug)
+                from ontology import published_context
+                published = published_context(create_store_client(), slug)
+                version.update({"published_schema_fingerprint": published.get("fingerprint"),
+                                "published_status": published.get("status")})
+                self._send_json(200, version)
             except (OntologyError, ValueError) as exc:
                 status = exc.status if isinstance(exc, OntologyError) else 400
                 self._send_json(status, {"error": str(exc)})
+            except Exception:
+                self._send_json(502, {"error": "Не удалось сверить состояние опубликованной схемы", "published_status": "unavailable"})
         elif path == "/api/ontologies":
+            list_quarantine(ROOT / "ontologies")
             self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
                                   "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
+        elif path == "/api/ontologies/quarantine":
+            self._send_json(200, {"items": list_quarantine(ROOT / "ontologies")})
         elif path.startswith("/api/ontologies/") and path.count("/") == 3 and path != "/api/ontologies/validate":
             slug = path.rsplit("/", 1)[-1]
             try:
                 text, sha = read_ontology(ROOT / "ontologies", slug)
                 payload = {"slug": slug, "filename": slug + ".ttl", "uri": ontology_uri(slug),
-                           "text": text, "sha256": sha, "publication_status": "unknown"}
+                           "text": text, "sha256": sha, "publication_status": "unknown",
+                           "publication_history": publication_history(ROOT / "ontologies", slug)}
                 try:
                     store = create_store_client()
                     if store.backend == "graphdb":
@@ -1627,7 +1751,7 @@ class Handler(BaseHTTPRequestHandler):
                         url = graph_store_url(store.base_url, store.repository, ontology_uri(slug))
                         remote_data = graph_request(url, "GET", store.username, store.password, store.timeout)
                         remote = Graph().parse(data=remote_data, format="turtle")
-                        payload["publication_status"] = "published" if isomorphic(parse_ttl(text, slug), remote) else "unpublished"
+                        payload["publication_status"] = "published" if isomorphic(parse_ttl(text, slug), remote) else "diverged"
                     else:
                         payload["publication_status"] = "unsupported"
                 except HTTPError as exc:
@@ -1707,6 +1831,23 @@ class Handler(BaseHTTPRequestHandler):
             except (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
                 self._send_json(502, {"error": "Не удалось получить последние активности"})
                 self.log_error("CRM recent activities query failed (%s)", type(exc).__name__)
+        elif path == "/api/employee-recent-activities":
+            try:
+                params = parse_qs(urlsplit(self.path).query)
+                project = params.get("project", ["all"])[0]
+                employee = params.get("employee", ["all"])[0]
+                valid_projects = {item["id"] for item in get_categories()}
+                if project != "all" and project not in valid_projects:
+                    self._send_json(400, {"error": "Неизвестная категория проекта"})
+                    return
+                self._send_json(200, get_employee_recent_activities(project, employee))
+            except GRAPH_QUERY_EXCEPTIONS as exc:
+                self._send_json(502, {
+                    "employees": [],
+                    "activities": [],
+                    "error": "Не удалось получить последние активности сотрудников",
+                })
+                self.log_error("CRM employee activities query failed (%s)", type(exc).__name__)
         elif path == "/api/lead-pulse":
             try:
                 payload = get_lead_pulse()
@@ -1932,180 +2073,16 @@ class Handler(BaseHTTPRequestHandler):
     def _ontology_class_statistics(self) -> None:
         try:
             payload = _read_json_body(self, max_bytes=4096)
-        except (ValueError, UnicodeError):
-            self._send_json(400, {"error": "Некорректный JSON запроса статистики"})
-            return
-
-        namespace = payload.get("namespace")
-        if not isinstance(namespace, str):
-            self._send_json(400, {"error": "Укажите URI пространства имён"})
-            return
-        namespace = namespace.strip()
-        parsed_namespace = urlsplit(namespace)
-        if (
-            not namespace or len(namespace) > 512 or not parsed_namespace.scheme
-            or (parsed_namespace.scheme in {"http", "https"} and not parsed_namespace.netloc)
-            or any(char.isspace() or ord(char) < 0x20 for char in namespace)
-        ):
-            self._send_json(400, {"error": "Укажите корректное абсолютное URI пространства имён"})
-            return
-
-        namespace_literal = sparql_literal(namespace)
-        class_query = """
-PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX owl:  <http://www.w3.org/2002/07/owl#>
-SELECT ?class (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
-       (COUNT(DISTINCT ?instance) AS ?instanceCount)
-WHERE {
-  {
-    SELECT DISTINCT ?class WHERE {
-      {
-        { ?class a owl:Class }
-        UNION { ?class a rdfs:Class }
-        UNION { ?child rdfs:subClassOf ?class }
-        UNION { ?instance a ?class }
-      }
-      FILTER(isIRI(?class))
-      FILTER(STRSTARTS(STR(?class), {{namespace}}))
-    }
-  }
-  OPTIONAL {
-    ?class rdfs:label ?label .
-    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
-  }
-  OPTIONAL {
-    ?class rdfs:comment ?comment .
-    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
-  }
-  OPTIONAL { ?instance a ?class }
-}
-GROUP BY ?class
-ORDER BY LCASE(STR(?class))
-""".replace("{{namespace}}", namespace_literal)
-        feature_query = """
-PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?class ?feature
-       (SAMPLE(?label) AS ?labelRu) (SAMPLE(?comment) AS ?commentRu)
-       (COUNT(DISTINCT ?instance) AS ?instancesWithValue)
-WHERE {
-  ?instance a ?class ; ?feature ?value .
-  FILTER(STRSTARTS(STR(?class), {{namespace}}))
-  FILTER(?feature != rdf:type)
-  FILTER(!isLiteral(?value) || STRLEN(STR(?value)) > 0)
-  OPTIONAL {
-    ?feature rdfs:label ?label .
-    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
-  }
-  OPTIONAL {
-    ?feature rdfs:comment ?comment .
-    FILTER(LANGMATCHES(LANG(?comment), "ru") && STRLEN(STR(?comment)) > 0)
-  }
-}
-GROUP BY ?class ?feature
-ORDER BY LCASE(STR(?class)) LCASE(STR(?feature))
-""".replace("{{namespace}}", namespace_literal)
-        relation_query = """
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?property ?domain ?range (SAMPLE(?label) AS ?labelRu)
-WHERE {
-  ?property rdfs:domain ?domain ; rdfs:range ?range .
-  FILTER(isIRI(?domain) && isIRI(?range))
-  FILTER(STRSTARTS(STR(?domain), {{namespace}}))
-  FILTER(STRSTARTS(STR(?range), {{namespace}}))
-  OPTIONAL {
-    ?property rdfs:label ?label .
-    FILTER(LANGMATCHES(LANG(?label), "ru") && STRLEN(STR(?label)) > 0)
-  }
-}
-GROUP BY ?property ?domain ?range
-ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
-""".replace("{{namespace}}", namespace_literal)
-
-        try:
-            store = create_store_client()
-            class_rows = store.select(class_query)
-            feature_rows = store.select(feature_query)
-            relation_rows = store.select(relation_query)
-        except (HTTPError, URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError) as exc:
+            namespace = payload.get("namespace")
+            if not isinstance(namespace, str):
+                raise ValueError("Укажите URI пространства имён")
+            result = class_statistics(create_store_client(), namespace.strip(), payload.get("class_uri"))
+            self._send_json(200, result)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+        except Exception as exc:
             self.log_error("Ontology class statistics failed (%s)", type(exc).__name__)
-            self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища"})
-            return
-
-        def binding(row: dict[str, dict[str, str]], name: str) -> str:
-            value = row.get(name, {}).get("value", "")
-            return value if isinstance(value, str) else ""
-
-        def local_name(uri: str) -> str:
-            return uri.rstrip("/#").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
-
-        classes: dict[str, dict[str, object]] = {}
-        for row in class_rows:
-            class_uri = binding(row, "class")
-            if not class_uri:
-                continue
-            try:
-                instance_count = int(binding(row, "instanceCount") or "0")
-            except ValueError:
-                instance_count = 0
-            classes[class_uri] = {
-                "uri": class_uri,
-                "name": local_name(class_uri),
-                "label_ru": binding(row, "labelRu") or None,
-                "comment_ru": binding(row, "commentRu") or None,
-                "instance_count": instance_count,
-                "features": [],
-            }
-
-        for row in feature_rows:
-            class_uri = binding(row, "class")
-            feature_uri = binding(row, "feature")
-            if not class_uri or not feature_uri:
-                continue
-            if class_uri not in classes:
-                classes[class_uri] = {
-                    "uri": class_uri,
-                    "name": local_name(class_uri),
-                    "label_ru": None,
-                    "comment_ru": None,
-                    "instance_count": 0,
-                    "features": [],
-                }
-            try:
-                populated_count = int(binding(row, "instancesWithValue") or "0")
-            except ValueError:
-                populated_count = 0
-            feature = {
-                "uri": feature_uri,
-                "name": local_name(feature_uri),
-                "label_ru": binding(row, "labelRu") or None,
-                "comment_ru": binding(row, "commentRu") or None,
-                "instances_with_value": populated_count,
-            }
-            classes[class_uri]["features"].append(feature)
-
-        result = sorted(classes.values(), key=lambda item: str(item["uri"]))
-        relations = []
-        for row in relation_rows:
-            property_uri = binding(row, "property")
-            domain_uri = binding(row, "domain")
-            range_uri = binding(row, "range")
-            if not property_uri or not domain_uri or not range_uri:
-                continue
-            relations.append({
-                "property": property_uri,
-                "property_name": local_name(property_uri),
-                "property_label_ru": binding(row, "labelRu") or None,
-                "domain": domain_uri,
-                "range": range_uri,
-            })
-        self._send_json(200, {
-            "namespace": namespace,
-            "class_count": len(result),
-            "classes": result,
-            "relations": relations,
-        })
+            self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища", "status": "unavailable"})
 
     def _ontology_assistant_suggest(self) -> None:
         token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
@@ -2129,7 +2106,7 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
             if not isinstance(payload, dict):
                 self._send_json(400, {"error": "Ожидается JSON-объект"})
                 return
-            result = suggest_ontology(payload, create_store_client())
+            result = suggest_ontology(payload)
             self._send_json(200, result)
         except AssistantError as exc:
             self._send_json(exc.status, {"error": exc.message, "code": exc.code})
@@ -2179,6 +2156,18 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
                                       "published": False})
                 return
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "delete-preview" and method == "POST":
+                self._send_json(200, ontology_delete_preview(ROOT / "ontologies", parts[2], create_store_client()))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "delete" and method == "POST":
+                expected={key:payload.get(key) for key in ("file_sha256","graph_present","graph_fingerprint","revision_fingerprint")}
+                if not expected["file_sha256"] or not isinstance(expected["graph_present"],bool):
+                    raise OntologyError(400,"Передайте снимок предпросмотра удаления")
+                self._send_json(200,delete_ontology(ROOT / "ontologies",parts[2],create_store_client(),expected))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "restore" and method == "POST":
+                self._send_json(200,restore_quarantined(ROOT / "ontologies",str(payload.get("operation_id", "")),create_store_client()))
+                return
             if len(parts) == 3 and parts[:2] == ["api", "ontologies"] and method == "PUT":
                 slug = parts[2]
                 sha = save_text(ROOT / "ontologies", slug, payload.get("text"),
@@ -2187,7 +2176,18 @@ ORDER BY LCASE(STR(?domain)) LCASE(STR(?property)) LCASE(STR(?range))
                                       "published": False})
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "publish" and method == "POST":
-                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client()))
+                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client(), payload.get("expected_sha256")))
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "rollback" and method == "POST":
+                history = [row for row in publication_history(ROOT / "ontologies", parts[2]) if row.get("status") == "confirmed"]
+                current_sha = history[-1].get("sha256") if history else None
+                previous = next((row for row in reversed(history[:-1]) if row.get("sha256") != current_sha), None)
+                if previous is None:
+                    raise OntologyError(409, "Нет предыдущей подтверждённой ревизии для отката")
+                previous_sha = str(previous.get("sha256"))
+                result = publish(ROOT / "ontologies", parts[2], create_store_client(), previous_sha)
+                result["text"] = read_revision(ROOT / "ontologies", parts[2], previous_sha)
+                self._send_json(200, result)
                 return
             self._send_json(404, {"error": "Неизвестная операция управления онтологиями"})
         except OntologyError as exc:
@@ -2254,12 +2254,24 @@ def main() -> None:
     port = int(os.environ.get("DASHBOARD_PORT", "8082"))
     server = ThreadingHTTPServer((host, port), Handler)
     store = create_store_client()
+    quarantine_stop=threading.Event()
+    def expire_quarantine() -> None:
+        while not quarantine_stop.is_set():
+            try:
+                removed=purge_expired_quarantine(ROOT / "ontologies")
+                if removed: print(f"Expired ontology quarantine entries purged: {len(removed)}")
+            except Exception as exc:
+                print(f"Ontology quarantine cleanup failed ({type(exc).__name__})")
+            if quarantine_stop.wait(3600): break
+    cleanup_thread=threading.Thread(target=expire_quarantine,name="ontology-quarantine-cleanup",daemon=True)
+    cleanup_thread.start()
     print(f"CRM pulse: http://{host}:{port} (read-only; RDF backend: {store.backend})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("Stopping CRM pulse monitor")
     finally:
+        quarantine_stop.set()
         server.server_close()
 
 

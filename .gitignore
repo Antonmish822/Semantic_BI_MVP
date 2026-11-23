@@ -5,3 +5,10 @@
 __pycache__/
 *.py[cod]
 /logs/
+
+# Runtime ontology administration state; source TTL files remain versioned.
+/ontologies/.ontology-files.lock
+/ontologies/.ontology-publication.lock
+/ontologies/.publication.jsonl
+/ontologies/.revisions/
+/ontologies/.quarantine/

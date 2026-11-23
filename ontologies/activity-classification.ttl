@@ -28,6 +28,8 @@ b24:bindingDeal a owl:ObjectProperty ;
     rdfs:label "Связанная сделка"@ru ;
     rdfs:domain b24:Activity .
 
+b24:bindingDeal rdfs:range b24:Deal .
+
 b24:bindingLead a owl:ObjectProperty ;
     rdfs:label "Связанный лид"@ru ;
     rdfs:domain b24:Activity .

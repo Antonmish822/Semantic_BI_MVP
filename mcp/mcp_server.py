@@ -7,16 +7,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .mcp_queries import NAMED_QUERIES, list_named_queries, render_named_query
-from .mcp_schema import load_schema_summary
+from .mcp_queries import has_named_query, list_named_queries, render_named_query
+from .mcp_schema import load_published_schema, load_schema_summary
 from .mcp_security import SparqlValidationError, enforce_limit, ensure_select_only
+from ontology import list_published_ontologies, describe_ontology, class_statistics
+from ontology.schema import graph_uri as ontology_graph_uri
 from server import create_store_client, load_env, open_profile_log, profile_error, profile_event, profile_request_id
 
 METHODS = {
     "initialize", "notifications/initialized", "ping", "tools/list", "tools/call",
     "resources/list", "resources/templates/list", "prompts/list",
 }
-TOOLS = {"sparql_select", "list_queries", "run_named_query", "explain_schema"}
+TOOLS = {"sparql_select", "list_queries", "run_named_query", "explain_schema", "list_ontologies", "describe_ontology", "ontology_class_statistics"}
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -83,9 +85,12 @@ def _tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "explain_schema",
-            "description": "Краткое описание онтологии и доступных признаков.",
+            "description": "Прочитать актуальный опубликованный TBox по запросу: URI классов/свойств, метки, комментарии, domain/range, иерархию, аксиомы, Turtle и область CRM-графов для построения SPARQL.",
             "inputSchema": {"type": "object", "properties": {}},
         },
+        {"name":"list_ontologies","description":"Опубликованные онтологии в разрешённом namespace.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"describe_ontology","description":"Определения и аксиомы опубликованной схемы; можно ограничить классом.","inputSchema":{"type":"object","properties":{"slug":{"type":"string"},"class_uri":{"type":"string"}},"required":["slug"]}},
+        {"name":"ontology_class_statistics","description":"Агрегированная статистика классов опубликованной онтологии по активной области CRM данных.","inputSchema":{"type":"object","properties":{"slug":{"type":"string"},"class_uri":{"type":"string"}},"required":["slug"]}},
     ]
 
 
@@ -143,7 +148,7 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
 
     if name == "run_named_query":
         template = str(arguments.get("name") or "")
-        tags["template"] = template if template in NAMED_QUERIES else "unknown"
+        tags["template"] = template if has_named_query(template) else "unknown"
         params = arguments.get("parameters")
         if not template:
             raise JsonRpcError("Параметр name обязателен", -32602)
@@ -158,7 +163,30 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
         return result
 
     if name == "explain_schema":
-        return _format_content(load_schema_summary())
+        try:
+            store=create_store_client()
+            summary=load_published_schema(store,store.graph_prefix)
+            observations=load_schema_summary()
+            summary["entity_properties"]=observations.get("entity_properties",{})
+            summary["entity_properties_source"]="docs/entity_properties.csv (CRM observations only; not the published ontology)"
+        except Exception as exc:
+            summary={"classes":[],"properties":[],"object_properties":[],"datatype_properties":[],
+                     "published_ontologies":[],"ontology_schemas":[],"schema_truncated":True,
+                     "published_schema_status":"unavailable","schema_source":"published GraphDB read failed",
+                     "schema_error":type(exc).__name__}
+        return _format_content(summary)
+    if name == "list_ontologies":
+        return _format_content({"ontologies":list_published_ontologies(create_store_client())})
+    if name == "describe_ontology":
+        return _format_content(describe_ontology(create_store_client(),str(arguments.get("slug") or ""),arguments.get("class_uri")))
+    if name == "ontology_class_statistics":
+        slug=str(arguments.get("slug") or "")
+        try: uri=ontology_graph_uri(slug)
+        except ValueError as exc: raise JsonRpcError("Некорректный slug онтологии", -32602) from exc
+        namespace=os.environ.get("ONTOLOGY_DATA_NAMESPACE","https://example.org/bitrix24#")
+        result=class_statistics(create_store_client(),namespace,arguments.get("class_uri"))
+        result.update({"slug":slug,"graph_uri":uri})
+        return _format_content(result)
 
     raise JsonRpcError("Неизвестный инструмент", -32601)
 
@@ -207,7 +235,7 @@ class MCPHandler(BaseHTTPRequestHandler):
                 timing["tool"] = tool_name if isinstance(tool_name, str) and tool_name in TOOLS else "unknown"
                 if tool_name == "run_named_query" and isinstance(arguments, dict):
                     template = arguments.get("name")
-                    timing["template"] = template if isinstance(template, str) and template in NAMED_QUERIES else "unknown"
+                    timing["template"] = template if isinstance(template, str) and has_named_query(template) else "unknown"
                 result = _handle_tool_call(str(tool_name), arguments, request_id, call)
             elif method == "resources/list":
                 result = {"resources": []}

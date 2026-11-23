@@ -5,6 +5,8 @@ const dateFormat = new Intl.DateTimeFormat('ru-RU', {
 });
 const byId = (id) => document.getElementById(id);
 let employeePulseRequest = 0;
+let employeeActivitiesRequest = 0;
+let portfolioRequest = 0;
 
 function updateSituationsPanel(payload) {
   const panel = byId('situations-panel');
@@ -44,7 +46,7 @@ function applyViewProfile(payload) {
   const profile = payload?.view_profile || {};
   const order = Array.isArray(profile.block_order) ? profile.block_order : [];
   const highlights = new Set(Array.isArray(profile.highlights) ? profile.highlights : []);
-  const blocks = Array.from(container.querySelectorAll('[data-block]'));
+  const blocks = Array.from(document.querySelectorAll('#employees-tab-panel [data-block], #summaries-tab-panel [data-block]'));
   const orderIndex = new Map(order.map((key, index) => [String(key), index]));
   blocks.forEach((block) => {
     const name = block.dataset.block || '';
@@ -65,14 +67,6 @@ async function loadViewState() {
     if (!response.ok) throw new Error(data.error || 'Не удалось получить состояние вида');
     applyViewProfile(data);
     updateSituationsPanel(data);
-    const defaults = data?.view_profile?.default_filters || {};
-    if (defaults.project === 'nonempty' && project === 'all') {
-      const select = byId('project-filter');
-      if (select && select.options.length > 1) {
-        select.value = select.options[1].value;
-        loadPortfolio();
-      }
-    }
   } catch (error) {
     const panel = byId('situations-panel');
     if (panel) panel.hidden = true;
@@ -158,6 +152,52 @@ function renderEmployees(employees) {
   select.value = employees.some((item) => item.id === selected) ? selected : 'all';
 }
 
+function renderActivityEmployees(employees) {
+  const select = byId('employee-activities-filter');
+  const selected = select.value || 'all';
+  const options = [new Option('Все сотрудники', 'all')];
+  for (const employee of employees) {
+    options.push(new Option(employee.name || `Сотрудник ${tail(employee.id)}`, employee.id));
+  }
+  select.replaceChildren(...options);
+  select.value = employees.some((item) => item.id === selected) ? selected : 'all';
+}
+
+function renderEmployeeActivities(activities) {
+  const body = byId('employee-activities-rows');
+  body.replaceChildren();
+  byId('employee-activities-loading').hidden = true;
+  byId('employee-activities-count').textContent = numberFormat.format(activities.length);
+  if (!activities.length) {
+    byId('employee-activities-table').hidden = true;
+    byId('employee-activities-empty').hidden = false;
+    return;
+  }
+  byId('employee-activities-empty').hidden = true;
+  byId('employee-activities-table').hidden = false;
+  for (const activity of activities) {
+    const row = document.createElement('tr');
+    row.append(cell(formatDate(activity.created_at)));
+    const subject = cell(activity.subject || 'Без темы');
+    subject.className = 'employee-name';
+    row.append(subject);
+    const owner = cell(activity.owner_title || 'Без названия');
+    const ownerUri = document.createElement('span');
+    ownerUri.className = 'employee-uri';
+    ownerUri.textContent = tail(activity.owner_uri);
+    owner.append(ownerUri);
+    row.append(owner);
+    row.append(cell(activity.employee_name || 'Сотрудник не указан'));
+    body.append(row);
+  }
+}
+
+function cell(text) {
+  const element = document.createElement('td');
+  element.textContent = text;
+  return element;
+}
+
 function renderEmployeePulse(points) {
   const host = byId('employee-pulse-chart');
   host.replaceChildren();
@@ -238,6 +278,7 @@ function renderEmployeePulse(points) {
 }
 
 async function loadPortfolio() {
+  const requestId = ++portfolioRequest;
   byId('refresh').disabled = true;
   byId('portfolio-loading').hidden = false;
   try {
@@ -245,6 +286,7 @@ async function loadPortfolio() {
     const response = await fetch(`/api/pulse?project=${encodeURIComponent(category)}`, { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Не удалось загрузить портфель сотрудников');
+    if (requestId !== portfolioRequest) return;
     renderCategories(data.categories || []);
     renderPortfolio(data.employees || []);
     byId('connection').className = 'connection online';
@@ -253,13 +295,41 @@ async function loadPortfolio() {
     byId('error').hidden = true;
     loadViewState();
   } catch (error) {
+    if (requestId !== portfolioRequest) return;
     byId('connection').className = 'connection offline';
     byId('connection').lastElementChild.textContent = 'Нет соединения';
     byId('error').textContent = error.message;
     byId('error').hidden = false;
     byId('portfolio-loading').hidden = true;
   } finally {
-    byId('refresh').disabled = false;
+    if (requestId === portfolioRequest) byId('refresh').disabled = false;
+  }
+}
+
+async function loadEmployeeActivities() {
+  const requestId = ++employeeActivitiesRequest;
+  const project = byId('project-filter').value || 'all';
+  const employee = byId('employee-activities-filter').value || 'all';
+  byId('employee-activities-loading').hidden = false;
+  byId('employee-activities-empty').hidden = true;
+  byId('employee-activities-table').hidden = true;
+  try {
+    const params = new URLSearchParams({ project, employee });
+    const response = await fetch(`/api/employee-recent-activities?${params}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось загрузить активности сотрудников');
+    if (requestId !== employeeActivitiesRequest) return;
+    renderActivityEmployees(data.employees || []);
+    if ((byId('employee-activities-filter').value || 'all') !== employee) {
+      loadEmployeeActivities();
+      return;
+    }
+    renderEmployeeActivities(data.activities || []);
+  } catch (error) {
+    if (requestId !== employeeActivitiesRequest) return;
+    byId('employee-activities-loading').hidden = true;
+    byId('employee-activities-empty').hidden = false;
+    byId('employee-activities-empty').textContent = error.message;
   }
 }
 
@@ -281,15 +351,39 @@ async function loadEmployeePulse() {
   }
 }
 
+function selectEmployeesTab(tab) {
+  const summaries = tab === 'summaries';
+  byId('employees-tab-panel').hidden = summaries;
+  byId('summaries-tab-panel').hidden = !summaries;
+  byId('employees-tab').classList.toggle('active', !summaries);
+  byId('employees-tab').setAttribute('aria-pressed', String(!summaries));
+  byId('summaries-tab').classList.toggle('active', summaries);
+  byId('summaries-tab').setAttribute('aria-pressed', String(summaries));
+  if (summaries) loadEmployeePulse();
+}
+
+byId('employees-tab').addEventListener('click', () => selectEmployeesTab('employees'));
+byId('summaries-tab').addEventListener('click', () => selectEmployeesTab('summaries'));
+byId('toggle-employee-activities').addEventListener('click', () => {
+  const button = byId('toggle-employee-activities');
+  const open = button.getAttribute('aria-expanded') !== 'true';
+  button.setAttribute('aria-expanded', String(open));
+  byId('employee-activities-content').hidden = !open;
+  button.firstElementChild.textContent = open ? 'Скрыть список' : 'Показать список';
+  if (open) loadEmployeeActivities();
+});
 byId('refresh').addEventListener('click', () => {
   loadPortfolio();
   loadEmployeePulse();
   loadViewState();
+  loadEmployeeActivities();
 });
 byId('project-filter').addEventListener('change', () => {
   loadPortfolio();
   loadViewState();
+  loadEmployeeActivities();
 });
+byId('employee-activities-filter').addEventListener('change', loadEmployeeActivities);
 byId('lead-employee-filter').addEventListener('change', () => {
   loadEmployeePulse();
   loadViewState();
@@ -297,8 +391,10 @@ byId('lead-employee-filter').addEventListener('change', () => {
 loadPortfolio();
 loadEmployeePulse();
 loadViewState();
+loadEmployeeActivities();
 window.setInterval(() => {
   loadPortfolio();
   loadEmployeePulse();
   loadViewState();
+  loadEmployeeActivities();
 }, 60_000);

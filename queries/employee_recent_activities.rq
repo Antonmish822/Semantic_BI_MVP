@@ -1,0 +1,47 @@
+# @mcp-query
+# @mcp-description: Возвращает до 10 последних активностей и ответственных сотрудников.
+# selected_project — код воронки или all (по умолчанию all); при выборе кода остаются активности по сделкам этой воронки.
+# selected_employee — URI сотрудника или all (по умолчанию all). Строки содержат дату, тему, CRM-сущность и сотрудника.
+PREFIX b24: <https://example.org/bitrix24#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+SELECT DISTINCT ?activity ?activity_at ?subject ?owner ?owner_title
+                ?employee ?employee_name
+WHERE {
+  VALUES ?selected_project { {{selected_project}} }
+  VALUES ?selected_employee { {{selected_employee}} }
+  GRAPH ?activity_graph {
+    ?activity b24:responsible ?employee ;
+              b24:createdAt ?activity_raw .
+    OPTIONAL { ?activity b24:subject ?subject }
+    OPTIONAL { ?activity b24:owner ?owner }
+  }
+  FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
+         && CONTAINS(STR(?activity_graph), ":activity:"))
+  FILTER(?selected_employee = "all" || STR(?employee) = ?selected_employee)
+  FILTER(?selected_project = "all" || EXISTS {
+    GRAPH ?category_activity_graph {
+      ?activity b24:owner ?deal ; b24:ownerTypeId "2" .
+    }
+    FILTER(STRSTARTS(STR(?category_activity_graph), {{graph_prefix}})
+           && CONTAINS(STR(?category_activity_graph), ":activity:"))
+    GRAPH ?category_deal_graph { ?deal b24:categoryCode ?activity_category_code }
+    FILTER(STRSTARTS(STR(?category_deal_graph), {{graph_prefix}})
+           && CONTAINS(STR(?category_deal_graph), ":deal:")
+           && STR(?activity_category_code) = ?selected_project)
+  })
+  BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
+  OPTIONAL {
+    GRAPH ?owner_graph { ?owner b24:title ?owner_title }
+    FILTER(STRSTARTS(STR(?owner_graph), {{graph_prefix}})
+           && (CONTAINS(STR(?owner_graph), ":deal:")
+               || CONTAINS(STR(?owner_graph), ":lead:")))
+  }
+  OPTIONAL {
+    GRAPH ?user_graph { ?employee b24:fullName ?employee_name }
+    FILTER(STRSTARTS(STR(?user_graph), {{graph_prefix}})
+           && CONTAINS(STR(?user_graph), ":user:"))
+  }
+}
+ORDER BY DESC(?activity_at) STR(?activity)
+LIMIT 10

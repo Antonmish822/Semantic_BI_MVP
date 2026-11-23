@@ -20,9 +20,9 @@
       <div class="header-actions">
         <a class="auth-link" href="/auth/logout">Выйти</a>
         <label class="team-filter global-filter">
-          <span>Категория</span>
-          <select id="project-filter" class="project-filter" aria-label="Фильтр дашборда по категории">
-            <option value="all">Все категории</option>
+          <span>Воронка</span>
+          <select id="project-filter" class="project-filter" aria-label="Фильтр дашборда по воронке">
+            <option value="all">Все сделки</option>
           </select>
         </label>
         <span id="connection" class="connection pending"><i></i><span>Подключение…</span></span>
@@ -42,6 +42,12 @@
       <a href="/ontologies">Онтологии</a>
     </nav>
 
+    <nav class="section-tabs" aria-label="Разделы сделок">
+      <button id="deals-tab" class="section-tab active" type="button" aria-pressed="true" aria-controls="deals-tab-panel">Сделки</button>
+      <button id="summaries-tab" class="section-tab" type="button" aria-pressed="false" aria-controls="summaries-tab-panel">Сводки</button>
+    </nav>
+
+    <div id="deals-tab-panel" class="tab-content">
     <div id="error" class="error-banner" hidden></div>
 
     <section id="situations-panel" class="panel situations-panel" hidden>
@@ -54,7 +60,7 @@
       <div class="section-heading">
         <div>
           <p class="eyebrow">ТЕКУЩАЯ ВОРОНКА</p>
-          <h2 id="pulse-title">Активные сделки <span class="stage-pill">P · В работе</span></h2>
+          <h2 id="pulse-title">Активные сделки (сводные показатели) <span class="stage-pill">P · В работе</span></h2>
         </div>
         <p class="section-note">Срез обновляется автоматически · все интервалы считаются от текущего времени</p>
       </div>
@@ -80,30 +86,11 @@
           <div class="metric-foot">Новые сделки в работе</div>
         </article>
         <article class="metric-card metric-danger">
-          <div class="metric-label">Без активности 7 дней</div>
-          <div id="inactive-7d" class="metric-value">—</div>
-          <div class="metric-foot">Требуют внимания менеджера</div>
+          <div class="metric-label">Красные сделки</div>
+          <div id="red-deals-count" class="metric-value">—</div>
+          <div class="metric-foot">Старше 10 дней · активность только в первые сутки</div>
         </article>
       </div>
-    </section>
-
-      <section id="deals-activity-distribution" class="panel block" data-block="deal_activity_distribution" aria-labelledby="activity-distribution-title">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">ДАВНОСТЬ АКТИВНОСТИ</p>
-          <h2 id="activity-distribution-title">Распределение активных сделок по последней активности</h2>
-          <p class="panel-subtitle">Интервалы по 5 дней · сделки стадии P</p>
-        </div>
-        <label class="team-filter">
-          <span>Категория графика</span>
-          <select id="activity-distribution-category" class="project-filter" aria-label="Фильтр графика по категории">
-            <option value="all">Все категории</option>
-          </select>
-        </label>
-      </div>
-      <div id="activity-distribution-loading" class="empty-state">Загружаю распределение…</div>
-      <div id="activity-distribution-chart" class="activity-distribution-chart" role="img" aria-label="Распределение активных сделок по давности последней активности" hidden></div>
-      <div id="activity-distribution-empty" class="empty-state" hidden>Нет сделок для распределения.</div>
     </section>
 
       <section id="deals-red" class="panel red-panel block" data-block="red_deals" aria-labelledby="red-title">
@@ -111,7 +98,7 @@
         <div>
           <p class="eyebrow danger-eyebrow">ТРЕБУЮТ ВНИМАНИЯ</p>
           <h2 id="red-title">Красные сделки</h2>
-          <p class="panel-subtitle">Владелец-сделка · нет записи активности за последние 7 дней</p>
+          <p class="panel-subtitle">Старше 10 дней · активности только в первые сутки · показаны до 30 сделок</p>
         </div>
         <div class="red-controls">
           <button id="toggle-red" class="secondary-button" type="button" aria-expanded="false" aria-controls="red-content">
@@ -123,11 +110,11 @@
         <div id="red-loading" class="empty-state">Загружаю список сделок…</div>
         <div class="table-wrap">
           <table id="red-table" hidden>
-            <thead><tr><th>Сделка</th><th>Ответственный</th><th>Создана</th><th>Последняя активность в карточке</th></tr></thead>
+            <thead><tr><th>Сделка</th><th>Ответственный</th><th>Создана</th><th>lastActivityTime</th><th>Последняя по bindingDeal</th><th>Последняя по owner</th></tr></thead>
             <tbody id="red-rows"></tbody>
           </table>
         </div>
-        <div id="red-empty" class="empty-state" hidden>Сделок без активности за 7 дней нет.</div>
+        <div id="red-empty" class="empty-state" hidden>Сделок по этому критерию нет.</div>
       </div>
     </section>
 
@@ -155,6 +142,22 @@
     </section>
 
     </div>
+    </div>
+
+    <section id="summaries-tab-panel" class="tab-content" aria-labelledby="summaries-tab" hidden>
+      <section id="deals-activity-distribution" class="panel" aria-labelledby="activity-distribution-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">ДАВНОСТЬ АКТИВНОСТИ</p>
+            <h2 id="activity-distribution-title">Распределение активных сделок по последней активности</h2>
+            <p class="panel-subtitle">Интервалы по 5 дней · сделки стадии P</p>
+          </div>
+        </div>
+        <div id="activity-distribution-loading" class="empty-state">Загружаю распределение…</div>
+        <div id="activity-distribution-chart" class="activity-distribution-chart" role="img" aria-label="Распределение активных сделок по давности последней активности" hidden></div>
+        <div id="activity-distribution-empty" class="empty-state" hidden>Нет сделок для распределения.</div>
+      </section>
+    </section>
 
     <footer>
       <span>Только чтение · GraphDB · bitrix24_v2_parallel</span>

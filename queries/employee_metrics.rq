@@ -1,3 +1,8 @@
+# @mcp-query
+# @mcp-description: Портфель активных сделок P и активности сотрудников за 24 часа, 7 и 30 дней.
+# Сотрудник включается, если имеет активную сделку P и хотя бы одну активность за 30 дней.
+# selected_project — код воронки или all (по умолчанию all); при фильтре учитываются активности её сделок.
+# Возвращает счётчик сделок без активности за 7 дней, активность связывается по responsible, сделка — по assignedTo.
 PREFIX b24: <https://example.org/bitrix24#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
@@ -41,7 +46,7 @@ WHERE {
            && CONTAINS(STR(?user_graph), ":user:"))
   }
 
-  OPTIONAL {
+  {
     SELECT ?employee
            (SUM(IF(?activity_at >= NOW() - "PT24H"^^xsd:dayTimeDuration, 1, 0)) AS ?activities_24h)
            (SUM(IF(?activity_at >= NOW() - "P7D"^^xsd:dayTimeDuration, 1, 0)) AS ?activities_7d)

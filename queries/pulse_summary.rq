@@ -1,3 +1,9 @@
+# @mcp-query
+# @mcp-description: Сводные счётчики сделок P: всего активно, создано за 24 часа/7/30 дней и число красных.
+# selected_project — код воронки или all (по умолчанию all).
+# Красная сделка старше 10 дней, lastActivityTime не позже первых суток после создания,
+# и после первых суток нет активности ни по bindingDeal, ни по owner типа 2.
+# Возвращает одну агрегированную строку; используйте для KPI, не для списка сделок.
 PREFIX b24: <https://example.org/bitrix24#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
@@ -6,29 +12,46 @@ SELECT
   (SUM(IF(?created_at >= NOW() - "PT24H"^^xsd:dayTimeDuration && ?created_at <= NOW(), 1, 0)) AS ?created_24h)
   (SUM(IF(?created_at >= NOW() - "P7D"^^xsd:dayTimeDuration && ?created_at <= NOW(), 1, 0)) AS ?created_7d)
   (SUM(IF(?created_at >= NOW() - "P30D"^^xsd:dayTimeDuration && ?created_at <= NOW(), 1, 0)) AS ?created_30d)
-  (SUM(IF(?has_activity_7d, 0, 1)) AS ?inactive_7d)
+  (SUM(IF(?is_red_deal, 1, 0)) AS ?red_deals_count)
 WHERE {
   VALUES ?selected_project { {{selected_project}} }
   GRAPH ?deal_graph {
     ?deal b24:stageSemantic "P" ;
           b24:createdAt ?created_raw ;
           b24:categoryCode ?category_code .
+    OPTIONAL { ?deal b24:lastActivityTime ?last_activity_raw }
   }
   FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
          && CONTAINS(STR(?deal_graph), ":deal:"))
   FILTER(?selected_project = "all"
          || STR(?category_code) = ?selected_project)
   BIND(xsd:dateTime(STR(?created_raw)) AS ?created_at)
+  BIND(xsd:dateTime(STR(?last_activity_raw)) AS ?last_activity_time)
   BIND(EXISTS {
     GRAPH ?activity_graph {
-      ?activity b24:owner ?deal ;
-                b24:ownerTypeId "2" ;
+      ?activity b24:bindingDeal ?deal ;
                 b24:createdAt ?activity_raw .
     }
     FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
            && CONTAINS(STR(?activity_graph), ":activity:"))
     BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
-    FILTER(?activity_at >= NOW() - "P7D"^^xsd:dayTimeDuration
-           && ?activity_at <= NOW())
-  } AS ?has_activity_7d)
+    FILTER(?activity_at > ?created_at + "P1D"^^xsd:dayTimeDuration)
+  } AS ?late_binding_activity)
+  BIND(EXISTS {
+    GRAPH ?owner_activity_graph {
+      ?owner_activity b24:owner ?deal ;
+                      b24:ownerTypeId "2" ;
+                      b24:createdAt ?owner_activity_raw .
+    }
+    FILTER(STRSTARTS(STR(?owner_activity_graph), {{graph_prefix}})
+           && CONTAINS(STR(?owner_activity_graph), ":activity:"))
+    BIND(xsd:dateTime(STR(?owner_activity_raw)) AS ?owner_activity_at)
+    FILTER(?owner_activity_at > ?created_at + "P1D"^^xsd:dayTimeDuration)
+  } AS ?late_owner_activity)
+  BIND(IF(BOUND(?last_activity_time),
+       ?created_at < NOW() - "P10D"^^xsd:dayTimeDuration
+       && ?last_activity_time <= ?created_at + "P1D"^^xsd:dayTimeDuration
+       && !?late_binding_activity
+       && !?late_owner_activity,
+       false) AS ?is_red_deal)
 }

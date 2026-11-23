@@ -17,6 +17,7 @@ COPY agent_service.py ./agent_service.py
 COPY mcp ./mcp
 COPY ontology_admin.py ./ontology_admin.py
 COPY ontology_assistant.py ./ontology_assistant.py
+COPY ontology ./ontology
 COPY ontologies ./ontologies
 COPY queries ./queries
 COPY docs ./docs

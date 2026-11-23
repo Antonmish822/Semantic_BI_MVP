@@ -1,35 +1,108 @@
+# @mcp-query
+# @mcp-description: Список красных сделок P по выбранной воронке или по всем воронкам.
+# Критерий: сделка старше 10 дней; lastActivityTime не позже первых суток; нет более поздней активности
+# по bindingDeal и по owner типа 2. Возвращает даты и сведения об активностях, максимум 30 строк.
+# selected_project — код воронки или all (по умолчанию all); это список, не полный счётчик.
 PREFIX b24: <https://example.org/bitrix24#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
-SELECT DISTINCT ?deal ?title ?assigned_to ?manager_name
-                ?created_at ?last_activity_time
+SELECT DISTINCT ?deal ?title ?assigned_to ?manager_name ?created_at
+                ?last_activity_time ?binding_activity_at ?binding_activity
+                ?binding_subject ?binding_responsible ?binding_responsible_name
+                ?owner_activity_at ?owner_activity ?owner_subject
+                ?owner_responsible ?owner_responsible_name
 WHERE {
   VALUES ?selected_project { {{selected_project}} }
   GRAPH ?deal_graph {
     ?deal b24:stageSemantic "P" ;
           b24:createdAt ?created_raw ;
+          b24:lastActivityTime ?last_activity_raw ;
           b24:categoryCode ?category_code .
     OPTIONAL { ?deal b24:title ?title }
     OPTIONAL { ?deal b24:assignedTo ?assigned_to }
-    OPTIONAL { ?deal b24:lastActivityTime ?last_activity_time }
   }
   FILTER(STRSTARTS(STR(?deal_graph), {{graph_prefix}})
          && CONTAINS(STR(?deal_graph), ":deal:"))
   FILTER(?selected_project = "all"
          || STR(?category_code) = ?selected_project)
   BIND(xsd:dateTime(STR(?created_raw)) AS ?created_at)
+  BIND(xsd:dateTime(STR(?last_activity_raw)) AS ?last_activity_time)
 
-  FILTER NOT EXISTS {
-    GRAPH ?activity_graph {
-      ?activity b24:owner ?deal ;
-                b24:ownerTypeId "2" ;
-                b24:createdAt ?activity_raw .
+  FILTER(?created_at < NOW() - "P10D"^^xsd:dayTimeDuration)
+  FILTER(?last_activity_time <= ?created_at + "P1D"^^xsd:dayTimeDuration)
+
+  OPTIONAL {
+    SELECT ?deal (MAX(?activity_at) AS ?binding_activity_at)
+    WHERE {
+      GRAPH ?activity_graph {
+        ?activity b24:bindingDeal ?deal ;
+                  b24:createdAt ?activity_raw .
+      }
+      FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
+             && CONTAINS(STR(?activity_graph), ":activity:"))
+      BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
     }
-    FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
-           && CONTAINS(STR(?activity_graph), ":activity:"))
-    BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
-    FILTER(?activity_at >= NOW() - "P7D"^^xsd:dayTimeDuration
-           && ?activity_at <= NOW())
+    GROUP BY ?deal
+  }
+  OPTIONAL {
+    SELECT ?deal (MAX(?activity_at) AS ?owner_activity_at)
+    WHERE {
+      GRAPH ?activity_graph {
+        ?activity b24:owner ?deal ;
+                  b24:ownerTypeId "2" ;
+                  b24:createdAt ?activity_raw .
+      }
+      FILTER(STRSTARTS(STR(?activity_graph), {{graph_prefix}})
+             && CONTAINS(STR(?activity_graph), ":activity:"))
+      BIND(xsd:dateTime(STR(?activity_raw)) AS ?activity_at)
+    }
+    GROUP BY ?deal
+  }
+
+  FILTER(!BOUND(?binding_activity_at)
+         || ?binding_activity_at <= ?created_at + "P1D"^^xsd:dayTimeDuration)
+  FILTER(!BOUND(?owner_activity_at)
+         || ?owner_activity_at <= ?created_at + "P1D"^^xsd:dayTimeDuration)
+
+  OPTIONAL {
+    GRAPH ?binding_graph {
+      ?binding_activity b24:bindingDeal ?deal ;
+                        b24:createdAt ?binding_raw .
+      OPTIONAL { ?binding_activity b24:subject ?binding_subject }
+      OPTIONAL { ?binding_activity b24:responsible ?binding_responsible }
+    }
+    FILTER(STRSTARTS(STR(?binding_graph), {{graph_prefix}})
+           && CONTAINS(STR(?binding_graph), ":activity:"))
+    BIND(xsd:dateTime(STR(?binding_raw)) AS ?binding_match_at)
+    FILTER(?binding_match_at = ?binding_activity_at)
+    OPTIONAL {
+      GRAPH ?binding_user_graph {
+        ?binding_responsible b24:fullName ?binding_responsible_name
+      }
+      FILTER(STRSTARTS(STR(?binding_user_graph), {{graph_prefix}})
+             && CONTAINS(STR(?binding_user_graph), ":user:"))
+    }
+  }
+
+  OPTIONAL {
+    GRAPH ?owner_graph {
+      ?owner_activity b24:owner ?deal ;
+                      b24:ownerTypeId "2" ;
+                      b24:createdAt ?owner_raw .
+      OPTIONAL { ?owner_activity b24:subject ?owner_subject }
+      OPTIONAL { ?owner_activity b24:responsible ?owner_responsible }
+    }
+    FILTER(STRSTARTS(STR(?owner_graph), {{graph_prefix}})
+           && CONTAINS(STR(?owner_graph), ":activity:"))
+    BIND(xsd:dateTime(STR(?owner_raw)) AS ?owner_match_at)
+    FILTER(?owner_match_at = ?owner_activity_at)
+    OPTIONAL {
+      GRAPH ?owner_user_graph {
+        ?owner_responsible b24:fullName ?owner_responsible_name
+      }
+      FILTER(STRSTARTS(STR(?owner_user_graph), {{graph_prefix}})
+             && CONTAINS(STR(?owner_user_graph), ":user:"))
+    }
   }
 
   OPTIONAL {

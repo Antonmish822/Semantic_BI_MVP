@@ -4,8 +4,11 @@
       "required_entities": ["Deal", "Activity", "Category", "User"],
       "required_features": [
         "deal.stageSemantic",
+        "deal.createdAt",
         "deal.lastActivityTime",
         "deal.assignedTo",
+        "activity.bindingDeal",
+        "activity.owner",
         "activity.ownerTypeId",
         "activity.createdAt"
       ],
@@ -13,7 +16,7 @@
         {
           "id": "red_deals_spike",
           "title": "Всплеск красных сделок",
-          "description": "Доля красных сделок превышает порог за последнюю неделю.",
+          "description": "Доля сделок старше 10 дней без активности после первых суток составляет не менее 18%.",
           "priority": 100,
           "when": {
             "metric": "red_deals_ratio",
@@ -22,10 +25,7 @@
           },
           "effect": {
             "promote_blocks": ["red_deals", "deal_activity_distribution"],
-            "highlights": ["red_deals"],
-            "default_filters": {
-              "project": "nonempty"
-            }
+            "highlights": ["red_deals"]
           }
         },
         {
@@ -118,10 +118,7 @@
           },
           "effect": {
             "promote_blocks": ["employees_table"],
-            "highlights": ["employees_table"],
-            "default_filters": {
-              "project": "nonempty"
-            }
+            "highlights": ["employees_table"]
           }
         }
       ]

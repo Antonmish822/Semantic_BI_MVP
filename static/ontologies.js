@@ -28,12 +28,20 @@
   async function refreshList() {
     const data=await api('/api/ontologies');
     $('file-list').replaceChildren(...data.ontologies.map(item=>{const button=document.createElement('button');button.type='button';button.className='secondary-button';button.textContent=item.filename;button.onclick=()=>openFile(item.slug);return button;}));
+    const quarantine=await api('/api/ontologies/quarantine');
+    $('quarantine-list').replaceChildren(...(quarantine.items||[]).map(item=>{
+      const card=element('div',undefined,'quarantine-item');
+      card.append(element('p',`${item.slug} · ревизий: ${item.revision_count} · состояние: ${item.state} · до ${new Date(item.expires_at).toLocaleString()}`));
+      const restore=element('button','Восстановить файл','secondary-button');restore.type='button';
+      restore.onclick=async()=>{if(!confirm(`Восстановить ${item.slug}.ttl, архив ревизий и исходный опубликованный граф? Если в GraphDB уже находится другой граф с этим URI, восстановление остановится без перезаписи.`))return;try{const result=await api(`/api/ontologies/${encodeURIComponent(item.slug)}/restore`,{method:'POST',body:JSON.stringify({operation_id:item.operation_id})});notice(result.message);await refreshList();}catch(error){notice(error.message,true);}};
+      card.append(restore);return card;
+    }));
     if (!data.admin_enabled) notice('Изменение отключено: серверу не задан ONTOLOGY_ADMIN_TOKEN.',true);
   }
   async function openFile(slug) {
     if (state.dirty && !confirm('Есть несохранённые изменения. Переключиться без сохранения?')) return;
     if (state.assistantSlug && state.assistantSlug !== slug) { state.assistantHistory=[]; state.assistantSlug=null; $('assistant-history').replaceChildren(); $('assistant-state').textContent='Готов'; }
-    try { const data=await api(`/api/ontologies/${encodeURIComponent(slug)}`);state.slug=data.slug;state.sha=data.sha256;state.savedText=data.text;state.dirty=false;$('editor').value=data.text;$('new-slug').value=data.slug;$('current-meta').textContent=`${data.filename} · граф ${data.uri}`;$('publish-status').textContent=({published:'Статус: опубликовано · содержимое графа совпадает',unpublished:'Статус: не опубликовано',unsupported:'Статус: публикация доступна только в GraphDB',missing:'Статус: граф отсутствует',unavailable:'Статус: GraphDB недоступна или граф не удалось прочитать'})[data.publication_status]||'Статус: не опубликовано';state.assistantResult=null;notice('Файл загружен.');}
+    try { const data=await api(`/api/ontologies/${encodeURIComponent(slug)}`);state.slug=data.slug;state.sha=data.sha256;state.savedText=data.text;state.dirty=false;$('editor').value=data.text;$('new-slug').value=data.slug;$('current-meta').textContent=`${data.filename} · граф ${data.uri} · SHA-256 ${data.sha256}`;const history=data.publication_history||[],latest=[...history].reverse().find(row=>row.status==='confirmed');const historyText=latest?` · последняя подтверждённая публикация ${latest.sha256.slice(0,12)} (${latest.at})`:'';$('publish-status').textContent=(({published:'Статус: опубликовано · содержимое графа совпадает',unpublished:'Статус: граф прочитан, но не совпадает с текущим файлом',diverged:'Статус: расхождение текущего файла и опубликованного графа',unsupported:'Статус: публикация доступна только в GraphDB',missing:'Статус: граф отсутствует',unavailable:'Статус: GraphDB недоступна или граф не удалось прочитать'})[data.publication_status]||'Статус: не опубликовано')+historyText;state.assistantResult=null;notice('Файл загружен.');}
     catch(error){notice(error.message,true);}
   }
   function renderClassStatistics(data) {
@@ -111,7 +119,50 @@
   $('validate').onclick=async()=>{try{const slug=currentSlug();const d=await api('/api/ontologies/validate',{method:'POST',body:JSON.stringify({slug,text:$('editor').value})});notice(`Turtle корректен. URI: ${d.uri}`);}catch(e){notice(e.message,true);}};
   $('save').onclick=async()=>{try{const slug=currentSlug(), text=$('editor').value;let d;if(currentFileSha()){d=await api(`/api/ontologies/${encodeURIComponent(slug)}`,{method:'PUT',body:JSON.stringify({text,expected_sha256:currentFileSha()})});}else{d=await api('/api/ontologies',{method:'POST',body:JSON.stringify({slug,text})});}state.slug=d.slug;state.sha=d.sha256;state.savedText=text;state.dirty=false;$('new-slug').value=d.slug;$('current-meta').textContent=`${d.slug}.ttl · граф ${d.uri}`;$('publish-status').textContent='Статус: не опубликовано';state.assistantResult=null;notice('Файл сохранён. Граф не изменён.');await refreshList();}catch(e){notice(e.message,true);}};
   $('create').onclick=async()=>{const slug=currentSlug();if(currentFileSha()){notice('Файл уже существует. Используйте кнопку «Сохранить».',true);return;}try{const text=$('editor').value;const d=await api('/api/ontologies',{method:'POST',body:JSON.stringify({slug,text})});state.slug=d.slug;state.sha=d.sha256;state.savedText=text;state.dirty=false;$('new-slug').value=d.slug;$('current-meta').textContent=`${d.slug}.ttl · граф ${d.uri}`;$('publish-status').textContent='Статус: не опубликовано';state.assistantResult=null;notice('Новый файл сохранён. Граф не изменён.');await refreshList();}catch(e){notice(e.message,true);}};
-  $('publish').onclick=async()=>{const slug=currentSlug();if(state.dirty){notice('Сначала сохраните текст.',true);return;}if(slug!==state.slug||!state.sha){notice('Сначала сохраните файл.',true);return;}try{const d=await api(`/api/ontologies/${encodeURIComponent(slug)}/publish`,{method:'POST',body:'{}'});$('publish-status').textContent=`Статус: опубликовано · ${d.message}`;notice(d.message);}catch(e){notice(e.message,true);}};
+  $('publish').onclick=async()=>{const slug=currentSlug();if(state.dirty){notice('Сначала сохраните текст.',true);return;}if(slug!==state.slug||!state.sha){notice('Сначала сохраните файл.',true);return;}try{const d=await api(`/api/ontologies/${encodeURIComponent(slug)}/publish`,{method:'POST',body:JSON.stringify({expected_sha256:state.sha})});$('publish-status').textContent=`Статус: опубликовано · SHA-256 ${d.sha256} · ${d.message}`;notice(d.message);}catch(e){notice(e.message,true);}};
+  $('rollback').onclick=async()=>{const slug=currentSlug();if(!slug||state.dirty){notice('Сначала выберите сохранённый файл и сохраните текущие изменения.',true);return;}if(!confirm('Опубликовать предыдущую подтверждённую ревизию этого графа?'))return;try{const d=await api(`/api/ontologies/${encodeURIComponent(slug)}/rollback`,{method:'POST',body:'{}'});$('editor').value=d.text;state.assistantResult=null;changed();$('current-meta').textContent=`${slug}.ttl · открыта опубликованная ревизия ${d.sha256} · сохранённый файл ${state.sha}`;$('publish-status').textContent=`Статус: откат опубликован · в редакторе несохранённая ревизия ${d.sha256}`;notice('Предыдущая ревизия опубликована и загружена в редактор. Она отличается от текущего сохранённого файла; нажмите «Сохранить», если нужно синхронизировать файл с откатом.');}catch(e){notice(e.message,true);}};
+  async function confirmOntologyDeletion(preview, slug) {
+    const dialog=$('delete-confirm-dialog');
+    const fingerprint=preview.graph_fingerprint||'';
+    $('delete-confirm-summary').textContent=`Будет удалён ${slug}.ttl и ${preview.revision_count} ревизий. ${preview.graph_present?'Именованный граф будет удалён и сохранён в карантин.':'Опубликованный граф не найден.'} Все данные будут храниться ${preview.quarantine_days} дней.`;
+    $('delete-confirm-fingerprint').textContent=fingerprint||'Опубликованный граф отсутствует';
+    $('copy-fingerprint-status').textContent='Fingerprint можно выделить мышью или скопировать кнопкой.';
+    $('delete-confirm-slug').value='';$('confirm-delete-ontology').disabled=true;dialog.dataset.fingerprintCopied='false';
+    return new Promise(resolve=>{
+      let settled=false,onInput,onCancel;
+      const finish=value=>{if(settled)return;settled=true;if(onInput)$('delete-confirm-slug').removeEventListener('input',onInput);if(onCancel)dialog.removeEventListener('cancel',onCancel);dialog.close();resolve(value);};
+      const input=$('delete-confirm-slug');
+      const confirmButton=$('confirm-delete-ontology');
+      onInput=()=>{confirmButton.disabled=input.value!==slug&&dialog.dataset.fingerprintCopied!=='true';};
+      input.addEventListener('input',onInput);
+      $('cancel-delete-ontology').onclick=()=>finish(false);
+      confirmButton.onclick=()=>{if(input.value===slug||dialog.dataset.fingerprintCopied==='true')finish(true);};
+      onCancel=event=>{event.preventDefault();finish(false);};dialog.addEventListener('cancel',onCancel);
+      dialog.showModal();input.focus();
+    });
+  }
+  $('copy-delete-fingerprint').onclick=async()=>{
+    const fingerprint=$('delete-confirm-fingerprint').textContent;
+    if(!fingerprint||fingerprint==='Опубликованный граф отсутствует')return;
+    try{
+      if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(fingerprint);
+      else {const selection=window.getSelection();const range=document.createRange();range.selectNodeContents($('delete-confirm-fingerprint'));selection.removeAllRanges();selection.addRange(range);if(!document.execCommand('copy'))throw new Error('copy failed');selection.removeAllRanges();}
+      const dialog=$('delete-confirm-dialog');dialog.dataset.fingerprintCopied='true';$('confirm-delete-ontology').disabled=false;
+      $('copy-fingerprint-status').textContent='Fingerprint скопирован. Можно подтвердить удаление.';
+    }catch(_){$('copy-fingerprint-status').textContent='Не удалось скопировать автоматически. Выделите fingerprint мышью и нажмите Ctrl+C.';}
+  };
+  $('delete-ontology').onclick=async()=>{
+    const slug=currentSlug();
+    if(!slug||slug!==state.slug||!state.sha){notice('Выберите сохранённую онтологию.',true);return;}
+    if(state.dirty){notice('Сначала сохраните или отмените изменения редактора.',true);return;}
+    const button=$('delete-ontology');button.disabled=true;
+    try{
+      const preview=await api(`/api/ontologies/${encodeURIComponent(slug)}/delete-preview`,{method:'POST',body:'{}'});
+      if(!await confirmOntologyDeletion(preview,slug))return;
+      const result=await api(`/api/ontologies/${encodeURIComponent(slug)}/delete`,{method:'POST',body:JSON.stringify(preview)});
+      state.slug=null;state.sha=null;state.savedText='';state.dirty=false;state.assistantResult=null;$('editor').value='';$('current-meta').textContent='Онтология помещена в карантин.';$('publish-status').textContent=`Удалено. Файл и ревизии будут окончательно очищены ${new Date(result.expires_at).toLocaleString()}.`;$('new-slug').value='';notice(`Онтология ${slug} удалена${result.graph_deleted?' вместе с именованным графом':''} и помещена в карантин до ${new Date(result.expires_at).toLocaleString()}.`);await refreshList();
+    }catch(error){notice(error.message,true);}finally{button.disabled=false;}
+  };
   $('file-input').onchange=async event=>{const file=event.target.files[0];if(!file)return;const text=await file.text();$('editor').value=text;$('new-slug').value=file.name.replace(/\.ttl$/i,'');state.slug=null;state.sha=null;state.savedText='';state.dirty=true;state.assistantResult=null;$('current-meta').textContent='Локальный файл · ещё не сохранён';changed();};
   $('auth-check').onclick=async()=>{try{await api('/api/ontologies/validate',{method:'POST',body:JSON.stringify({slug:'access-check',text:'<urn:bitrix24:ontology:access-check> a <http://www.w3.org/2002/07/owl#Ontology> .'})});notice('Доступ администратора подтверждён.');}catch(e){notice(e.message,true);}};
   function addHistory(role, content) { state.assistantHistory.push({role,content}); }
@@ -126,12 +177,13 @@
     if(result.evidence?.length){card.append(element('h4','Основания'));const list=element('ul');for(const item of result.evidence)list.append(element('li',`${item.source} · ${item.reference}: ${item.finding}`));card.append(list);}
     if(result.warnings?.length){card.append(element('h4','Предупреждения'));const list=element('ul');for(const warning of result.warnings)list.append(element('li',warning));card.append(list);}
     if(result.assumptions?.length)card.append(element('p',`Предположения: ${result.assumptions.join(' · ')}`));
-    if(result.diff){card.append(element('h4','Diff'));card.append(element('pre',result.diff,'assistant-diff'));}
+    if(result.rdf_diff){card.append(element('h4','Изменения RDF'));for(const [kind,label] of [['added','Добавлено'],['removed','Удалено']]){card.append(element('p',`${label}: ${result.rdf_diff[kind]?.length||0} аксиом`));if(result.rdf_diff[kind]?.length)card.append(element('pre',result.rdf_diff[kind].map(row=>row.join(' ')).join('\n'),'assistant-diff'));}}
+    if(result.diff){const details=element('details');details.append(element('summary','Текстовое сравнение TTL'));details.append(element('pre',result.diff,'assistant-diff'));card.append(details);}
     if(result.proposed_ttl){const details=element('details');details.append(element('summary','Полный предлагаемый Turtle'));details.append(element('pre',result.proposed_ttl,'assistant-diff'));card.append(details);}
-    const actions=element('div',undefined,'assistant-result-actions');const apply=element('button','Применить в редактор','secondary-button');apply.type='button';apply.disabled=!result.applicable;apply.onclick=()=>applySuggestion(result,apply);actions.append(apply);
-    const fix=element('button','Попросить исправить','secondary-button');fix.type='button';fix.onclick=()=>{const note=$('assistant-prompt').value.trim();sendSuggestion(`Исправь предыдущее предложение${note?`: ${note}`:'. Учти обнаруженные предупреждения и сохрани исходную цель.'}`,state.assistantResult?.proposed_ttl||null);};actions.append(fix);
-    const recalc=element('button','Пересчитать по текущему тексту','secondary-button');recalc.type='button';recalc.onclick=()=>sendSuggestion($('assistant-prompt').value||'Пересчитай предложение по текущему содержимому редактора.');actions.append(recalc);
-    card.append(actions);container.append(card);container.scrollTop=container.scrollHeight;
+    if(result.proposed_ttl){const actions=element('div',undefined,'assistant-result-actions');const apply=element('button','Применить в редактор','secondary-button');apply.type='button';apply.disabled=!result.applicable;apply.onclick=()=>applySuggestion(result,apply);actions.append(apply);
+      const fix=element('button','Попросить исправить','secondary-button');fix.type='button';fix.onclick=()=>{const note=$('assistant-prompt').value.trim();sendSuggestion(`Исправь предыдущее предложение${note?`: ${note}`:'. Учти обнаруженные предупреждения и сохрани исходную цель.'}`,state.assistantResult?.proposed_ttl||null);};actions.append(fix);
+      const recalc=element('button','Пересчитать по текущему тексту','secondary-button');recalc.type='button';recalc.onclick=()=>sendSuggestion($('assistant-prompt').value||'Пересчитай предложение по текущему содержимому редактора.');actions.append(recalc);card.append(actions);}
+    container.append(card);container.scrollTop=container.scrollHeight;
   }
   async function applySuggestion(result,button) {
     try {
@@ -139,6 +191,7 @@
       if(await sha256($('editor').value)!==result.editor_sha256)throw new Error('Текст редактора изменился. Пересчитайте предложение.');
       const version=await api(`/api/ontology-assistant/version?slug=${encodeURIComponent(result.slug)}`);
       if(version.file_sha256!==result.file_sha256)throw new Error('Сохранённый файл изменился. Пересчитайте предложение.');
+      if(version.published_schema_fingerprint!==result.published_schema_fingerprint||version.published_status!==result.published_schema_status)throw new Error('Опубликованная схема изменилась. Пересчитайте предложение.');
       if(!result.applicable||!result.proposed_ttl)throw new Error('Предложение не прошло локальную проверку Turtle.');
       $('editor').value=result.proposed_ttl;changed();state.assistantResult=null;button.disabled=true;notice('Предложение перенесено только в редактор. Проверьте и сохраните его отдельно.');
     } catch(e) {button.disabled=true;notice(`${e.message} Старое предложение заблокировано.`,true);}
@@ -152,7 +205,7 @@
     addHistory('user',message.trim());$('assistant-send').disabled=true;$('assistant-state').textContent='Работает…';
     try {
       const result=await api('/api/ontology-assistant/suggest',{method:'POST',body:JSON.stringify({slug,editor_text:editorText,editor_sha256:editorSha,file_sha256:fileSha,message:message.trim(),history,previous_proposal:previousProposal})});
-      state.assistantResult=result;$('assistant-prompt').value='';addHistory('assistant',`${result.summary}${result.question?` Уточнение: ${result.question}`:''}${result.proposed_ttl?` Предложен TTL (${result.proposed_ttl.length} символов).`:''}`);renderReply(result);$('assistant-state').textContent=result.applicable?'Предложение проверено':'Нужны уточнения';
+      state.assistantResult=result;$('assistant-prompt').value='';addHistory('assistant',`${result.summary}${result.question?` Уточнение: ${result.question}`:''}${result.proposed_ttl?` Предложен TTL (${result.proposed_ttl.length} символов).`:''}`);renderReply(result);$('assistant-state').textContent=result.applicable?'Предложение проверено':result.proposed_ttl?'Предложение требует проверки':result.question?'Нужны уточнения':'Анализ готов';
     } catch(e) {addHistory('assistant',`Ошибка: ${e.message}`);renderError(e);$('assistant-state').textContent='Ошибка';}
     finally {$('assistant-send').disabled=false;}
   }

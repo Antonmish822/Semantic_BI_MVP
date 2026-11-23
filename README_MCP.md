@@ -18,10 +18,17 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 
 ## Инструменты MCP
 
-- `sparql_select` — выполнить read-only SPARQL `SELECT` (для агента обычно выключен).
+- `sparql_select` — выполнить read-only SPARQL `SELECT` (разрешён агенту по умолчанию; отключается `AGENT_ALLOW_SPARQL=0`).
 - `list_queries` — список именованных запросов и параметров.
 - `run_named_query` — запуск именованного запроса с параметрами.
-- `explain_schema` — краткая схема (классы, свойства, доступные признаки и `graph_prefix`).
+- `explain_schema` — по запросу агента возвращает актуальный опубликованный TBox: полные URI классов/свойств, метки, комментарии, `rdfs:domain`/`rdfs:range`, иерархию, аксиомы и исходный Turtle для каждой опубликованной онтологии; также отдаёт область графов данных и fingerprint/статус чтения.
+- `list_ontologies` — опубликованные графы в `urn:bitrix24:ontology:`.
+- `describe_ontology` — опубликованный TBox по slug, при необходимости ограниченный URI класса.
+- `ontology_class_statistics` — агрегаты по namespace `ONTOLOGY_DATA_NAMESPACE`; возвращает область legacy REST и режим чтения.
+
+Встроенный помощник проектирования получает обязательную начальную схему и статистику вызовами `list_ontologies`, `describe_ontology` и `ontology_class_statistics` через тот же HTTP MCP endpoint до обращения к модели. Во время генерации модель видит только эти три ontology MCP-инструмента. AI Agent на вкладке `/agent` не получает полную схему при старте: системный промпт направляет его вызывать `explain_schema` через MCP только для вопросов о схеме/связях, неоднозначных свойствах или когда нужен новый SPARQL. Для запросов, требующих произвольной выборки, агент использует `sparql_select`; MCP разрешает только read-only SELECT, запрещает SERVICE и добавляет лимит строк, когда LIMIT отсутствует. `entity_properties` отдельно описывает CRM-наблюдения из `docs/entity_properties.csv`, а не опубликованный TBox.
+
+Каталог MCP синхронизируется прямо с коллекцией `queries/*.rq`: запросы, помеченные в первых строках `# @mcp-query`, автоматически появляются в `list_queries`. Имя берётся из имени файла без `.rq`, описание — из следующих комментариев начиная с `# @mcp-description:`, параметры — из плейсхолдеров шаблона. `run_named_query` исполняет этот же файл; отдельный реестр имён и путей не нужен. Изменения и добавление файлов видны MCP без правки Python-каталога. Шаблоны без метки остаются внутренними запросами приложения и в MCP не публикуются.
 
 ## Подключение из MCP‑клиентов (Zoo Code / Roo)
 
@@ -37,6 +44,8 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 - `RDF_USERNAME`, `RDF_PASSWORD`
 - `RDF_TIMEOUT`
 - `GRAPH_PREFIX`
+- `ONTOLOGY_DATA_NAMESPACE` — namespace, используемый общими агрегатами онтологии (по умолчанию `https://example.org/bitrix24#`). Счётчики сохраняют legacy REST default-dataset семантику.
+- `ONTOLOGY_MCP_URL` — HTTP MCP endpoint помощника (например `http://127.0.0.1:8090/mcp`; в Compose задан внутренний `http://mcp-graphdb:8090/mcp`).
 
 Параметры MCP:
 
@@ -45,7 +54,7 @@ MCP-сервер предоставляет read-only доступ к GraphDB ч
 - `MCP_MAX_ROWS` — верхний лимит строк (если в запросе нет `LIMIT`)
 - `MCP_MAX_RESPONSE_BYTES` — лимит размера ответа JSON
 - `AGENT_MCP_URL` — отдельный URL MCP для агента (например, `http://127.0.0.1:8090`)
-- `AGENT_ALLOW_SPARQL` — разрешить агенту `sparql_select` (по умолчанию выключен)
+- `AGENT_ALLOW_SPARQL` — разрешить агенту `sparql_select` (по умолчанию включён; задайте `0`, чтобы ограничить его именованными запросами)
 - `AGENT_DEBUG` — логировать вызовы MCP агентом
 
 Шаблон: [` .env.example`](.env.example)
@@ -105,15 +114,22 @@ python -m mcp.profile_graphdb \
 Для нестандартного порта задайте `--url`, а для другого расположения журнала
 (в том числе при запуске в контейнере) передайте путь к активному файлу через
 `--mcp-log`. По умолчанию используются параметры шаблонов из MCP.
-`--params-file` принимает JSON вида
-`{"red_deals":{"selected_project":"all"}}`.
+`--params-file` принимает JSON, где ключи — имена запросов, значения — их параметры. Например, для полного профиля с обязательными `as_of`:
 
-Текущий профиль полного набора: 12 запросов — `active_deals_by_category`,
-`activities_last_7d_by_user`, `categories`, `deal_activity_distribution`,
-`employee_metrics`, `lead_conversion_trend`, `lead_employee_pulse`,
-`lead_lifecycle`, `leads_by_source`, `pulse_summary`, `recent_activities`,
-`red_deals`. Настройки: 3 разогревочных и 50 измеряемых вызовов на запрос
-(600 измеряемых + 36 разогревочных), пауза 0,5 с, timeout 90 с, seed 42.
+```json
+{
+  "lead_response_cohort": {"as_of": "2026-11-23T12:00:00Z"},
+  "lead_red_queue": {"as_of": "2026-11-23T12:00:00Z"}
+}
+```
+
+Коллекция MCP содержит 12 запросов — `categories`, `deal_activity_distribution`,
+`employee_activity_people`, `employee_metrics`, `employee_recent_activities`,
+`lead_conversion_trend`, `lead_employee_pulse`, `lead_red_queue`,
+`lead_response_cohort`, `pulse_summary`, `recent_activities`, `red_deals`.
+Исторический профиль ниже содержит прежние 12 запросов; настройки были
+3 разогревочных и 50 измеряемых вызовов на запрос (600 измеряемых + 36
+разогревочных), пауза 0,5 с, timeout 90 с, seed 42.
 Для сокращённого прогона укажите один или несколько `--template <имя>` и/или
 уменьшите `--repeats`; сравнивая результаты, фиксируйте этот состав и число.
 
@@ -122,7 +138,8 @@ python -m mcp.profile_graphdb \
 измеряемых вызовов успешны. `lead_lifecycle` стабильно медленный: медиана
 9,13 с, p95 9,28 с. У большинства прочих запросов медиана около 8–147 мс;
 при этом встречаются одиночные задержки до 11,6 с на разных шаблонах. Это
-указывает как на отдельную дорогую выборку `lead_lifecycle`, так и на
+указывает как на отдельную дорогую выборку `lead_lifecycle` (этот запрос удалён
+из текущей MCP-коллекции), так и на
 периодические задержки GraphDB, затрагивающие разные запросы. Файл
 `graphdb-benchmark-3.json` получен на другом, устаревшем экземпляре репозитория
 и для сравнения с `bitrix24_v2_parallel_2` не используется.
