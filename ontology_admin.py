@@ -18,12 +18,33 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from rdflib import Graph, OWL, URIRef
+from rdflib import Graph, Literal, OWL, URIRef
 from rdflib.compare import isomorphic, to_canonical_graph
+from rdflib.namespace import XSD
 
 MAX_TTL_BYTES = 256 * 1024
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 FILE_LOCK = threading.RLock()
+
+
+def rdf_graphs_equivalent(left: Graph, right: Graph) -> bool:
+    """Compare RDF 1.1 graphs, allowing simple literals and xsd:string aliases.
+
+    GraphDB serializes an explicit ``xsd:string`` literal as a simple Turtle
+    literal. Those are the same RDF 1.1 value, but some rdflib versions retain
+    the distinction when checking graph isomorphism. Preserve language tags
+    and all non-string datatypes, while still letting isomorphic handle blank
+    node identifiers.
+    """
+    def normalize(graph: Graph) -> Graph:
+        result = Graph()
+        for subject, predicate, obj in graph:
+            if isinstance(obj, Literal) and obj.datatype in (None, XSD.string) and obj.language is None:
+                obj = Literal(str(obj), normalize=False)
+            result.add((subject, predicate, obj))
+        return result
+
+    return isomorphic(normalize(left), normalize(right))
 
 @contextmanager
 def _process_lock(directory: Path, name: str):
@@ -299,7 +320,7 @@ def restore_quarantined(directory: Path, operation_id: str, store: object) -> di
                         pass
                     restored_bytes=graph_request(url,"GET",store.username,store.password,store.timeout)
                     restored_graph=Graph().parse(data=restored_bytes,format="turtle")
-                    if not isomorphic(backup_graph,restored_graph): raise OntologyError(502,"GraphDB не подтвердил восстановление исходного графа")
+                    if not rdf_graphs_equivalent(backup_graph,restored_graph): raise OntologyError(502,"GraphDB не подтвердил восстановление исходного графа")
                     graph_restored=True
             except OntologyError: raise
             except Exception as exc: raise OntologyError(502,"Не удалось безопасно восстановить граф; файлы остались в карантине") from exc
@@ -506,7 +527,7 @@ def _publish_locked(directory: Path, slug: str, store: object, expected_sha256: 
             remote_data = graph_request(url, "GET", getattr(store, "username"),
                                         getattr(store, "password"), getattr(store, "timeout"))
             remote = Graph().parse(data=remote_data, format="turtle")
-            if isomorphic(file_graph, remote):
+            if rdf_graphs_equivalent(file_graph, remote):
                 result={"uri": uri, "matches": True, "sha256": sha, "slug":slug,
                         "message": "Граф совпадает с сохранённым файлом (PUT завершился с неопределённым ответом)"}
                 _journal(directory,{**result,"status":"confirmed","at":datetime.now(timezone.utc).isoformat(),"ambiguous_put":True})
@@ -524,7 +545,7 @@ def _publish_locked(directory: Path, slug: str, store: object, expected_sha256: 
         _journal(directory,{"slug":slug,"uri":uri,"sha256":sha,"status":"unknown","at":datetime.now(timezone.utc).isoformat(),"reason":"verification_read_failed"})
         raise OntologyError(502, "Граф загружен, но не удалось прочитать его для подтверждения",
                             retry_safe=False) from exc
-    matches = isomorphic(file_graph, remote)
+    matches = rdf_graphs_equivalent(file_graph, remote)
     if not matches:
         _journal(directory,{"slug":slug,"uri":uri,"sha256":sha,"status":"diverged","at":datetime.now(timezone.utc).isoformat()})
         raise OntologyError(502, "GraphDB ответил, но RDF-граф отличается от файла", matches=False)

@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, isomorphic, list_ontologies, publication_history, read_revision,
+from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, rdf_graphs_equivalent, list_ontologies, publication_history, read_revision,
                             ontology_uri, parse_ttl, publish, read_ontology, save_text,
                             ontology_delete_preview, delete_ontology, list_quarantine, restore_quarantined,
                             purge_expired_quarantine)
@@ -1751,7 +1751,7 @@ class Handler(BaseHTTPRequestHandler):
                         url = graph_store_url(store.base_url, store.repository, ontology_uri(slug))
                         remote_data = graph_request(url, "GET", store.username, store.password, store.timeout)
                         remote = Graph().parse(data=remote_data, format="turtle")
-                        payload["publication_status"] = "published" if isomorphic(parse_ttl(text, slug), remote) else "diverged"
+                        payload["publication_status"] = "published" if rdf_graphs_equivalent(parse_ttl(text, slug), remote) else "diverged"
                     else:
                         payload["publication_status"] = "unsupported"
                 except HTTPError as exc:
@@ -2034,8 +2034,12 @@ class Handler(BaseHTTPRequestHandler):
                 request_id=exc.headers.get("X-Request-ID"),
             )
         except Exception as exc:
-            self.log_error("Agent proxy request failed (%s)", type(exc).__name__)
-            self._send_json(502, {"error": "Агент недоступен"})
+            error_class = profile_error(exc)
+            self.log_error("Agent proxy request failed (%s)", error_class)
+            if error_class == "TimeoutError":
+                self._send_json(504, {"error": "Агент не успел завершить запрос"})
+            else:
+                self._send_json(502, {"error": "Агент недоступен"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path

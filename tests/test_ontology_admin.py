@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from unittest.mock import patch
 
 from ontology_admin import (OntologyError, graph_store_url, ontology_path, parse_ttl,
-                            publish, save_text)
+                            publish, rdf_graphs_equivalent, save_text)
 from server import admin_token_matches
 
 TTL = '''@prefix owl: <http://www.w3.org/2002/07/owl#> .
@@ -27,6 +27,14 @@ class Store:
 
 
 class OntologyAdminChecks(unittest.TestCase):
+    def test_graph_equivalence_accepts_rdf11_simple_and_xsd_string_literals(self):
+        from rdflib import Graph
+        explicit = Graph().parse(data='@prefix e: <urn:example:> . e:s e:p "P"^^<http://www.w3.org/2001/XMLSchema#string> .', format="turtle")
+        simple = Graph().parse(data='@prefix e: <urn:example:> . e:s e:p "P" .', format="turtle")
+        self.assertTrue(rdf_graphs_equivalent(explicit, simple))
+        other = Graph().parse(data='@prefix e: <urn:example:> . e:s e:p "P"@en .', format="turtle")
+        self.assertFalse(rdf_graphs_equivalent(explicit, other))
+
     def test_admin_token_header_supports_utf8_without_raw_unicode_header_bytes(self):
         token = "секрет-admin-token"
         import base64

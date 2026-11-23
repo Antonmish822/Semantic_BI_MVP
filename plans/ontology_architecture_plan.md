@@ -58,6 +58,12 @@
 
 ### Записи
 
+### 2026-11-23 — нормализация сравнения RDF при подтверждении публикации
+
+- По ошибке публикации `deal-classification` прочитан журнал: GraphDB вернул граф из 54 триплетов, с тем же числом триплетов, однако `rdflib.isomorphic` показал расхождение только из-за сериализации литерала: файл содержит `"P"^^xsd:string`, GraphDB отдаёт эквивалентный RDF 1.1 простой литерал `"P"`. Отличий в иных данных не обнаружено. Рабочий файл `ontologies/deal-classification.ttl` содержит пользовательское добавление `ActiveDeal`; его не менял и повторную публикацию не выполнял.
+- Добавлена `rdf_graphs_equivalent`: приводит только литералы без language tag с datatype `xsd:string`/без datatype к одной простой форме, затем сохраняет проверку изоморфизма, в том числе для blank nodes. Ею пользуются подтверждение и reconciliation публикации, REST-статус и проверка восстановления из карантина. Пути: `ontology_admin.py`, `server.py`; добавлен regression test в `tests/test_ontology_admin.py`.
+- Проверки: `.venv/bin/python -m unittest tests.test_ontology_admin` — PASS, 8 тестов, включая regression для simple literal/`xsd:string` и сохранения различия language-tagged литерала; `.venv/bin/python -m py_compile ontology_admin.py server.py tests/test_ontology_admin.py` — PASS; `git diff --check` — PASS; `docker compose build crm-pulse-monitor` — PASS. Локально подтверждено, что `rdflib` в окружении сохраняет разницу между простым литералом и `xsd:string`, а нормализация удаляет datatype только для этого эквивалентного случая. Живые GraphDB PUT/rollback не запускались; текущий граф не изменён. Статус этапа 2 остаётся частичным до стендовой проверки публикации.
+
 ### 2026-11-23 — проверяемые части этапов 1–3
 
 - До реализации выполнен `git stash push --include-untracked -m 'checkpoint before ontology architecture implementation'`, затем stash восстановлен без конфликтов. Снимок сохранён в `stash@{0}`; все исходные изменения пользователя остались в рабочем дереве.
