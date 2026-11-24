@@ -178,7 +178,7 @@ def validate_synthetic_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def execute_synthetic(query: str, *, request_id: str, named_template: bool = False) -> dict[str, Any]:
-    from server import profile_event
+    from common.runtime import profile_event
 
     started = time.monotonic()
     outcome, size, count = "upstream_unavailable", 0, 0
@@ -483,7 +483,7 @@ def execute(query: str, policy: ProjectionPolicy | None, transport=None, *, requ
     try:
         generated, limit = validate_and_build(query, policy)
     except SafeQueryError as exc:
-        from server import profile_event
+        from common.runtime import profile_event
         profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                       outcome=exc.status, rows=0, upstream_bytes=0)
         raise
@@ -492,7 +492,7 @@ def execute(query: str, policy: ProjectionPolicy | None, transport=None, *, requ
     alias = parsed["alias"].lstrip("?")
     group = parsed["group"]
     if not _slots.acquire(blocking=False):
-        from server import profile_event
+        from common.runtime import profile_event
         profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                       outcome="rate_limited", rows=0, upstream_bytes=0)
         raise SafeQueryError("rate_limited")
@@ -505,7 +505,7 @@ def execute(query: str, policy: ProjectionPolicy | None, transport=None, *, requ
             else:
                 rows, upstream_bytes = transport(generated)
         except SafeQueryError as exc:
-            from server import profile_event
+            from common.runtime import profile_event
             profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                           outcome=exc.status, rows=0, upstream_bytes=0)
             raise
@@ -542,19 +542,19 @@ def execute(query: str, policy: ProjectionPolicy | None, transport=None, *, requ
         result = {"status": "ok", "bindings": output, "truncated": truncated, "effective_limit": limit,
                   "snapshot_id": policy.snapshot_id, "entailment": policy.entailment}
         if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_AGENT_BYTES:
-            from server import profile_event
+            from common.runtime import profile_event
             profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                           outcome="response_too_large", rows=0, upstream_bytes=upstream_bytes)
             raise SafeQueryError("response_too_large")
         # Audit is metadata only; neither source nor generated SPARQL or bindings are logged.
-        from server import profile_event
+        from common.runtime import profile_event
         profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                       outcome="ok", rows=len(output), upstream_bytes=upstream_bytes)
         return result
     except SafeQueryError:
         raise
     except Exception:
-        from server import profile_event
+        from common.runtime import profile_event
         profile_event("safe_sparql", started, request_id=request_id, policy_version=policy.version,
                       outcome="upstream_unavailable", rows=0, upstream_bytes=0)
         raise SafeQueryError("upstream_unavailable") from None

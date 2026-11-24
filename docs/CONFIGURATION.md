@@ -5,10 +5,14 @@
 ## Как приложение читает конфигурацию
 
 - Локальный запуск читает `.env`; другой путь задаётся переменной процесса `CRM_MONITOR_ENV_FILE`.
-- Docker Compose передаёт указанный `CRM_MONITOR_ENV_FILE` как `env_file` всем трём сервисам. Чтобы Compose также использовал параметры подстановки (порты, Docker-сеть, `RDF_URL_DOCKER`) из отдельного файла, запускайте `docker compose --env-file .env.ai-agent ...` и задавайте `CRM_MONITOR_ENV_FILE=.env.ai-agent`.
-- Compose принудительно задаёт внутренние адреса и bind-host контейнеров. Значения `DASHBOARD_HOST`, `DASHBOARD_PORT`, `MCP_HOST`, `AGENT_HOST` и соответствующих внутренних портов используются при локальном запуске; опубликованные на хосте порты задаются `CRM_PULSE_MONITOR_PORT`, `MCP_SERVER_PORT` и `AGENT_SERVICE_PORT`.
+- Docker Compose передаёт указанный `CRM_MONITOR_ENV_FILE` как `env_file` сервисам приложения. Чтобы Compose также использовал параметры подстановки (порты, Docker-сеть, `RDF_URL_DOCKER`) из отдельного файла, запускайте `docker compose --env-file .env.ai-agent ...` и задавайте `CRM_MONITOR_ENV_FILE=.env.ai-agent`.
+- Compose принудительно задаёт внутренние адреса и bind-host контейнеров. Значения `DASHBOARD_HOST`, `DASHBOARD_PORT`, `MCP_HOST`, `AGENT_HOST` и соответствующих внутренних портов используются при локальном запуске. По умолчанию на хост опубликован только Gateway; loopback-порты Agent и MCP включаются дополнительным файлом `compose.debug.yaml`.
 - Общий каталог запросов хранится отдельно от кода в named volume `published_queries` (`/app/published_queries` в Compose); он сохраняется при пересборке и пересоздании контейнера. В локальном запуске по умолчанию используется `published_queries/` рядом с `server.py`.
 - `.env.example` содержит примерные адреса и имя репозитория. Значение `GRAPHDB_REPOSITORY` для dashboard и `MCP_SAFE_SPARQL_REPOSITORY` для безопасного SELECT — отдельные настройки и не переключают друг друга.
+- В Compose `ONTOLOGY_SERVICE_URL` указывает Gateway на сервис управления онтологиями (`ontology-service:8094`). Локально пустое значение оставляет совместимые обработчики `server.py`.
+- Файловый каталог TTL подключён только к Ontology, а том `published_queries` — только к Agent. Gateway передаёт API обоих сервисов по внутренним сетям.
+- Compose запускает отдельный `services/gateway` как HTTP entrypoint: только он подключён к ingress-сети с опубликованным host-портом, остальные доменные сети остаются внутренними. Для защищённого режима задайте `GATEWAY_AGENT_SECRET` в env-файле: Gateway проверяет сессию через Auth и передаёт Agent user ID с межсервисным секретом.
+- Переключатель `GATEWAY_WEB_APP_ENABLED=1` отдаёт собранный React UI на существующих URL. Для отката на исходные HTML/JS установите `0` и пересоздайте Gateway; API и Auth при этом остаются на прежних сервисах. `GET /ready` проверяет доступность внутренних `/health`.
 
 ## RDF-хранилище и область данных
 
@@ -104,12 +108,20 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 |---|---|
 | `DASHBOARD_HOST`, `DASHBOARD_PORT` | Bind адрес и порт dashboard в локальном запуске; значения по умолчанию в коде `127.0.0.1:8082`, пример задаёт `127.0.0.1:8085`. В Compose внутренний порт фиксирован на `8088`. |
 | `CRM_PULSE_MONITOR_PORT` | Loopback-порт dashboard на хосте в Compose; по умолчанию `8088`. |
+| `GATEWAY_MAX_BODY_BYTES` | Максимальный размер HTTP тела, проксируемого Gateway; по умолчанию 16 MiB. Превышение возвращает `413` до отправки запроса сервису. |
 | `AUTH_ENABLED` | `0` отключает Yandex ID login; `1` включает. |
 | `AUTH_COOKIE_NAME`, `AUTH_COOKIE_MAX_AGE`, `AUTH_COOKIE_DOMAIN`, `AUTH_COOKIE_SAME_SITE`, `AUTH_COOKIE_SECURE` | Имя, срок жизни, domain, SameSite и Secure-флаг сессионной cookie. Для HTTPS production включайте Secure. |
 | `AUTH_ALLOWED_DOMAINS` | Необязательный список разрешённых email-доменов через запятую. |
 | `AUTH_LOGOUT_REDIRECT`, `AUTH_DEBUG` | URL редиректа после выхода и диагностический режим OAuth. |
+| `AUTH_SERVICE_URL` | В Compose `http://auth-service:8092`; Gateway одновременно отправляет туда `/auth/*` и проверку сессии. При пустом значении локальный legacy Auth остаётся для разработки. |
+| `AUTH_INTERNAL_SECRET` | Случайный секрет длиной не менее 32 символов между Gateway и Auth. Compose использует локальное значение только для режима с выключенным OAuth; при `AUTH_ENABLED=1` задайте свой секрет. Auth endpoint `/internal/session` не публикуется наружу и отвечает только на запрос с этим секретом. |
+| `AUTH_REDIS_URL` | Compose использует приватный `auth-redis`; сессии и одноразовый OAuth state имеют TTL. Redis AOF хранится в volume `auth_sessions`. |
+| `AUTH_PUBLIC_ORIGIN` | Публичный origin без пути; должен совпадать с origin из `YANDEX_REDIRECT_URI`. Callback закреплён на `/auth/callback`. |
+| `ANALYTICS_SERVICE_URL` | Compose направляет девять аналитических API в `analytics-service`; пустое значение оставляет запросы в legacy обработчиках на время переключения или отката. |
 | `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` | OAuth credentials и callback; нужны при `AUTH_ENABLED=1`. |
 | `YANDEX_SCOPES`, `YANDEX_AUTH_URL`, `YANDEX_TOKEN_URL`, `YANDEX_PROFILE_URL` | OAuth scopes и endpoint-ы Yandex ID; обычно остаются значениями из примера. |
+
+В Compose OAuth-переменные и остальные не нужные Auth учётные данные очищаются из Gateway, Agent, MCP и Analytics. Auth доступен Gateway и Redis через отдельную сеть и не подключён к RDF-сети. Analytics напрямую читает RDF через общую сеть с Gateway и не имеет опубликованного host-порта. Для production задайте случайный `AUTH_INTERNAL_SECRET`, HTTPS callback и `AUTH_COOKIE_SECURE=1`.
 | `ONTOLOGY_ADMIN_TOKEN` | пусто | Общий серверный bearer token для административных операций с онтологиями и инструментами: сохранение/публикация/удаление онтологий, публикация и удаление запросов. Не путать с `MCP_AUTH_TOKEN`. |
 | `PUBLIC_ORIGIN` | пусто | Публичный origin приложения (`https://crm.example.org`, без пути), который должен совпасть с браузерным заголовком `Origin`. Задайте за reverse proxy, если он передаёт приложению внутренний `Host`; при пустом значении origin сверяется с `Host`. Применяется ко всем административным POST/DELETE операциям. |
 | `ONTOLOGY_QUARANTINE_DAYS` | Срок хранения удалённых онтологий в карантине, от 1 до 3650 дней; по умолчанию 30. |

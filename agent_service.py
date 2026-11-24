@@ -11,9 +11,11 @@ import threading
 import time
 import uuid
 from datetime import date, datetime, time as datetime_time, timezone
+import hmac
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 
 import httpx
@@ -22,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from mcp.safe_sparql import SYNTHETIC_MODE, synthetic_repository_enabled, validate_synthetic_result
+from query_library import QueryLibraryError, delete_published_query, list_published_queries, publish_query
 
 ROOT = Path(__file__).resolve().parent
 SPARQL_SKILL_PATH = ROOT / ".agents" / "skills" / "bitrix24-graphdb-sparql" / "SKILL.md"
@@ -30,6 +33,7 @@ PROFILE_LOCK = threading.Lock()
 PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 AGENT_PROGRESS_LOCK = threading.Lock()
 AGENT_PROGRESS: dict[str, dict[str, str]] = {}
+AGENT_PROGRESS_OWNER: dict[str, str] = {}
 AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
 AGENT_SESSIONS_LOCK = threading.RLock()
 
@@ -849,6 +853,19 @@ def _sanitize_history(raw: object) -> list[dict[str, str]]:
 load_env()
 app = FastAPI()
 
+
+@app.middleware("http")
+async def require_gateway_for_api(request: FastAPIRequest, call_next):
+    expected = os.environ.get("GATEWAY_AGENT_SECRET", "").strip()
+    auth_enabled = os.environ.get("AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if request.url.path.startswith("/api/") and auth_enabled and not expected:
+        return JSONResponse({"error": "Agent gateway secret is not configured"}, status_code=503)
+    if request.url.path.startswith("/api/") and expected:
+        supplied = request.headers.get("X-Gateway-Secret", "")
+        if not hmac.compare_digest(expected.encode(), supplied.encode()):
+            return JSONResponse({"error": "Forbidden"}, status_code=403)
+    return await call_next(request)
+
 cors_raw = os.environ.get("AGENT_CORS_ALLOW_ORIGINS", "*")
 origins = [item.strip() for item in cors_raw.split(",") if item.strip()]
 if not origins:
@@ -877,6 +894,93 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _published_query_dir() -> Path:
+    configured = os.environ.get("PUBLISHED_QUERY_DIR", "").strip()
+    path = Path(configured) if configured else ROOT / "published_queries"
+    return path if path.is_absolute() else ROOT / path
+
+
+def _query_admin_token(supplied: str) -> bool:
+    expected = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+    scheme, separator, credential = supplied.partition(" ")
+    if not expected or not separator:
+        return False
+    if scheme == "Bearer-UTF8":
+        import base64
+        try:
+            raw = credential.encode("ascii")
+            raw += b"=" * (-len(raw) % 4)
+            credential = base64.b64decode(raw, altchars=b"-_", validate=True).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError, ValueError):
+            return False
+    elif scheme != "Bearer":
+        return False
+    import hmac
+    return hmac.compare_digest(credential.encode(), expected.encode())
+
+
+def _query_origin_valid(origin: str | None, host: str) -> bool:
+    def parts(value: str, scheme: str = ""):
+        try:
+            parsed = urlsplit(value if "://" in value else f"//{value}")
+            current = (parsed.scheme or scheme).lower()
+            if (current not in {"http", "https"} or not parsed.hostname or parsed.username is not None
+                    or parsed.password is not None or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                return None
+            return current, parsed.hostname.casefold(), parsed.port or (443 if current == "https" else 80)
+        except ValueError:
+            return None
+    if not origin:
+        return False
+    source = parts(origin)
+    configured = os.environ.get("PUBLIC_ORIGIN", "").strip()
+    return bool(source and source == (parts(configured) if configured else parts(host, source[0])))
+
+
+@app.get("/api/published-queries")
+def published_query_list():
+    try:
+        return {"queries": list_published_queries(_published_query_dir()),
+                "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))}
+    except QueryLibraryError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status)
+
+
+@app.post("/api/published-queries")
+@app.delete("/api/published-queries/{query_id}")
+async def published_query_write(request: FastAPIRequest, query_id: str = ""):
+    if not os.environ.get("ONTOLOGY_ADMIN_TOKEN"):
+        return JSONResponse({"error": "Публикация запросов отключена: задайте ONTOLOGY_ADMIN_TOKEN"}, status_code=503)
+    if not _query_admin_token(request.headers.get("Authorization", "")):
+        return JSONResponse({"error": "Требуется токен администратора инструментов"}, status_code=401)
+    if not _query_origin_valid(request.headers.get("Origin"), request.headers.get("Host", "")):
+        return JSONResponse({"error": "Origin не соответствует адресу сервера"}, status_code=403)
+    try:
+        if request.method == "POST":
+            raw = await request.body()
+            if not raw or len(raw) > 24 * 1024:
+                raise ValueError("Недопустимый размер запроса")
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Ожидается JSON-объект")
+            if set(payload) != {"title", "description", "query"}:
+                raise ValueError("Передайте title, description и query")
+            entry = publish_query(_published_query_dir(), payload["title"], payload["description"], payload["query"])
+            return JSONResponse({"query": entry}, status_code=201)
+        if not query_id or "/" in query_id:
+            return JSONResponse({"error": "Опубликованный запрос не найден"}, status_code=404)
+        delete_published_query(_published_query_dir(), query_id)
+        return {"deleted": True, "id": query_id}
+    except QueryLibraryError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc) or "Некорректный JSON"}, status_code=400)
+    except PermissionError:
+        return JSONResponse({"error": "Каталог опубликованных запросов недоступен для записи"}, status_code=503)
+    except OSError:
+        return JSONResponse({"error": "Не удалось сохранить каталог опубликованных запросов"}, status_code=503)
+
+
 @app.get("/api/agent/progress")
 async def agent_progress(request: FastAPIRequest) -> JSONResponse:
     request_id = request.query_params.get("request_id", "")
@@ -884,6 +988,10 @@ async def agent_progress(request: FastAPIRequest) -> JSONResponse:
         return JSONResponse({"error": "Некорректный request_id"}, status_code=400)
     with AGENT_PROGRESS_LOCK:
         progress = AGENT_PROGRESS.get(request_id.lower())
+        owner = AGENT_PROGRESS_OWNER.get(request_id.lower())
+    authenticated_user = request.headers.get("X-Authenticated-User", "anonymous")
+    if owner is not None and owner != authenticated_user:
+        progress = None
     if progress is None:
         return JSONResponse({"error": "Запрос не найден"}, status_code=404)
     return JSONResponse(progress, status_code=200)
@@ -931,8 +1039,14 @@ async def agent_profile(request: FastAPIRequest) -> Response:
 @app.post("/api/agent")
 async def agent(request: FastAPIRequest) -> JSONResponse:
     raw = await request.body()
+    request_id = profile_request_id(request.headers.get("X-Request-ID", ""))
+    authenticated_user = request.headers.get("X-Authenticated-User", "anonymous")
+    with AGENT_PROGRESS_LOCK:
+        if len(AGENT_PROGRESS_OWNER) >= 256:
+            AGENT_PROGRESS_OWNER.pop(next(iter(AGENT_PROGRESS_OWNER)))
+        AGENT_PROGRESS_OWNER[request_id] = authenticated_user
     return await run_in_threadpool(
-        _run_agent, raw, profile_request_id(request.headers.get("X-Request-ID", "")),
+        _run_agent, raw, request_id, authenticated_user,
     )
 
 
@@ -1102,7 +1216,7 @@ def _render_parameterized_query(query: str, parameters: dict[object, object]) ->
     return _QUERY_PARAMETER.sub(lambda match: literals[match.group(1)], query)
 
 
-def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
+def _run_agent(raw: bytes, request_id: str, authenticated_user: str = "anonymous") -> JSONResponse:
     set_agent_progress(request_id, "starting", "Подготавливаю запрос")
     request_started = time.monotonic()
     model_calls = mcp_calls = history_count = context_bytes = response_bytes = 0
@@ -1132,8 +1246,9 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             session_id = str(uuid.uuid4())
+        session_key = f"{authenticated_user}:{session_id}"
         with AGENT_SESSIONS_LOCK:
-            stored = AGENT_SESSIONS.get(session_id, [])
+            stored = AGENT_SESSIONS.get(session_key, [])
         if stored:
             history = stored
         max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
@@ -1424,7 +1539,7 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
         ]
         new_history = new_history[-max_history:]
         with AGENT_SESSIONS_LOCK:
-            AGENT_SESSIONS[session_id] = new_history
+            AGENT_SESSIONS[session_key] = new_history
         response_payload = {
             "session_id": session_id,
             "reply": content,

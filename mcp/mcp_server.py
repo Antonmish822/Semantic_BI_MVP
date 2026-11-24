@@ -16,7 +16,8 @@ from .safe_sparql import (
 )
 from ontology import list_published_ontologies, describe_ontology, class_statistics
 from ontology.schema import graph_uri as ontology_graph_uri
-from server import create_store_client, load_env, open_profile_log, profile_error, profile_event, profile_request_id
+from common.rdf_transport import create_rdf_transport
+from common.runtime import load_env, open_profile_log, profile_error, profile_event, profile_request_id
 
 METHODS = {
     "initialize", "notifications/initialized", "ping", "tools/list", "tools/call",
@@ -178,7 +179,7 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
 
     if name == "explain_schema":
         try:
-            store=create_store_client()
+            store=create_rdf_transport()
             summary=load_published_schema(store,store.graph_prefix)
             observations=load_schema_summary()
             summary["entity_properties"]=observations.get("entity_properties",{})
@@ -190,15 +191,15 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
                      "schema_error":type(exc).__name__}
         return _format_content(summary)
     if name == "list_ontologies":
-        return _format_content({"ontologies":list_published_ontologies(create_store_client())})
+        return _format_content({"ontologies":list_published_ontologies(create_rdf_transport())})
     if name == "describe_ontology":
-        return _format_content(describe_ontology(create_store_client(),str(arguments.get("slug") or ""),arguments.get("class_uri")))
+        return _format_content(describe_ontology(create_rdf_transport(),str(arguments.get("slug") or ""),arguments.get("class_uri")))
     if name == "ontology_class_statistics":
         slug=str(arguments.get("slug") or "")
         try: uri=ontology_graph_uri(slug)
         except ValueError as exc: raise JsonRpcError("Некорректный slug онтологии", -32602) from exc
         namespace=os.environ.get("ONTOLOGY_DATA_NAMESPACE","https://example.org/bitrix24#")
-        result=class_statistics(create_store_client(),namespace,arguments.get("class_uri"))
+        result=class_statistics(create_rdf_transport(),namespace,arguments.get("class_uri"))
         result.update({"slug":slug,"graph_uri":uri})
         return _format_content(result)
 
@@ -311,7 +312,7 @@ def main() -> None:
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8090"))
     server = ThreadingHTTPServer((host, port), MCPHandler)
-    store = create_store_client()
+    store = create_rdf_transport()
     print(f"MCP server: http://{host}:{port}/mcp (read-only; RDF backend: {store.backend})")
     try:
         server.serve_forever()

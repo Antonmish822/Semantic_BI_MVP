@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from server import load_query, sparql_literal
+from common.query_templates import load_query, sparql_literal
 
 QUERY_COLLECTION = Path(__file__).resolve().parent.parent / "queries"
 MCP_MARKER = "# @mcp-query"

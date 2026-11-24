@@ -1,0 +1,8 @@
+services:
+  agent-service:
+    ports:
+      - "127.0.0.1:${AGENT_SERVICE_PORT:-8091}:8091"
+
+  mcp-graphdb:
+    ports:
+      - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"

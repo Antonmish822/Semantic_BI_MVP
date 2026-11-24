@@ -83,13 +83,13 @@ curl -s -X POST http://127.0.0.1:8090/mcp \
 cp .env.example .env
 ```
 
-2. Поднять сервис MCP (используется общий `compose.yaml`):
+2. Поднять сервис MCP для доступа по внутренней Docker-сети. Для обращения с хоста добавьте debug override:
 
 ```bash
-docker compose up -d --build mcp-graphdb
+docker compose -f compose.yaml -f compose.debug.yaml up -d --build mcp-graphdb
 ```
 
-3. Endpoint будет доступен на `http://127.0.0.1:8090/mcp`.
+3. Endpoint при debug override будет доступен на `http://127.0.0.1:8090/mcp`.
 
 Файл compose: [`compose.yaml`](compose.yaml)
 

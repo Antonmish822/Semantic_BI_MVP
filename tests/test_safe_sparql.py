@@ -111,7 +111,7 @@ GROUP BY ?status LIMIT 2"""
 
     def test_audit_events_contain_only_metadata(self):
         row = {"count": {"type": "literal", "value": "12"}, "status": {"type": "literal", "value": "open"}}
-        with patch("server.profile_event") as event:
+        with patch("common.runtime.profile_event") as event:
             execute(QUERY, policy(), lambda generated: ([row], 42), request_id="synthetic-request")
         fields = event.call_args.kwargs
         self.assertEqual(fields["request_id"], "synthetic-request")

@@ -1,0 +1,1 @@
+"""Yandex ID authentication service."""

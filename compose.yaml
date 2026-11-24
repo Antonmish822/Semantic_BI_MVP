@@ -3,6 +3,179 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: gateway
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ${CRM_MONITOR_ENV_FILE:-.env}
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: "8088"
+      GATEWAY_WEB_APP_ENABLED: ${GATEWAY_WEB_APP_ENABLED:-1}
+      AUTH_SERVICE_URL: http://auth-service:8092
+      ANALYTICS_SERVICE_URL: http://analytics-service:8093
+      ONTOLOGY_SERVICE_URL: http://ontology-service:8094
+      AUTH_INTERNAL_SECRET: ${AUTH_INTERNAL_SECRET:-local-auth-disabled-secret}
+      ONTOLOGY_ADMIN_TOKEN: ""
+      POLZA_API_KEY: ""
+      # OAuth credentials are available only to auth-service.
+      YANDEX_CLIENT_ID: ""
+      YANDEX_CLIENT_SECRET: ""
+      YANDEX_REDIRECT_URI: ""
+      YANDEX_SCOPES: ""
+      YANDEX_AUTH_URL: ""
+      YANDEX_TOKEN_URL: ""
+      YANDEX_PROFILE_URL: ""
+      AUTH_ALLOWED_DOMAINS: ""
+      AGENT_MODE: proxy
+      AGENT_BASE_URL: http://agent-service:8091
+    ports:
+      - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
+    depends_on:
+      - agent-service
+      - auth-service
+      - analytics-service
+      - ontology-service
+    networks:
+      - gateway_ingress
+      - auth_internal
+      - analytics_internal
+      - ontology_internal
+      - agent_internal
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ${CRM_MONITOR_ENV_FILE:-.env}
+    environment:
+      AUTH_HOST: 0.0.0.0
+      AUTH_PORT: "8092"
+      AUTH_REDIS_URL: redis://auth-redis:6379/0
+      AUTH_INTERNAL_SECRET: ${AUTH_INTERNAL_SECRET:-local-auth-disabled-secret}
+      RDF_URL: ""
+      RDF_USERNAME: ""
+      RDF_PASSWORD: ""
+      GRAPHDB_REPOSITORY: ""
+      GRAPH_PREFIX: ""
+      MCP_AUTH_TOKEN: ""
+      AGENT_MCP_AUTH_TOKEN: ""
+      POLZA_API_KEY: ""
+      ONTOLOGY_ADMIN_TOKEN: ""
+    depends_on:
+      - auth-redis
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8092/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - auth_internal
+      - auth_egress
+
+  auth-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - auth_sessions:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    networks:
+      - auth_internal
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: analytics
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ${CRM_MONITOR_ENV_FILE:-.env}
+    environment:
+      ANALYTICS_HOST: 0.0.0.0
+      ANALYTICS_PORT: "8093"
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      YANDEX_CLIENT_ID: ""
+      YANDEX_CLIENT_SECRET: ""
+      YANDEX_REDIRECT_URI: ""
+      AUTH_INTERNAL_SECRET: ""
+      POLZA_API_KEY: ""
+      ONTOLOGY_ADMIN_TOKEN: ""
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8093/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - rdf_store
+      - analytics_internal
+
+  ontology-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ontology
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./ontologies:/app/ontologies:rw
+    env_file:
+      - ${CRM_MONITOR_ENV_FILE:-.env}
+    environment:
+      ONTOLOGY_HOST: 0.0.0.0
+      ONTOLOGY_PORT: "8094"
+      ONTOLOGY_DIR: /app/ontologies
+      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      ONTOLOGY_MCP_URL: http://mcp-graphdb:8090/mcp
+      AGENT_MCP_URL: http://mcp-graphdb:8090
+      YANDEX_CLIENT_ID: ""
+      YANDEX_CLIENT_SECRET: ""
+      YANDEX_REDIRECT_URI: ""
+      AUTH_INTERNAL_SECRET: ""
+      AGENT_MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    command: ["uvicorn", "services.ontology.app:app", "--host", "0.0.0.0", "--port", "8094", "--no-access-log"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8094/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      - mcp-graphdb
+    group_add:
+      - "${CRM_MONITOR_GID:-1000}"
+    networks:
+      - rdf_store
+      - ontology_internal
+
+  agent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: agent
     restart: unless-stopped
     init: true
     read_only: true
@@ -11,64 +184,39 @@ services:
     volumes:
       - profile_logs:/app/logs
       - published_queries:/app/published_queries:rw
-      - ./ontologies:/app/ontologies:rw
-    env_file:
-      - ${CRM_MONITOR_ENV_FILE:-.env}
-    environment:
-      DASHBOARD_HOST: 0.0.0.0
-      DASHBOARD_PORT: "8088"
-      AGENT_MODE: proxy
-      AGENT_BASE_URL: http://agent-service:8091
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
-      ONTOLOGY_MCP_URL: http://mcp-graphdb:8090/mcp
-      PUBLISHED_QUERY_DIR: /app/published_queries
-    ports:
-      - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
-    depends_on:
-      - agent-service
-      - mcp-graphdb
-    group_add:
-      - "${CRM_MONITOR_GID:-1000}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - rdf_store
-
-  agent-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    read_only: true
-    tmpfs:
-      - /tmp
-    volumes:
-      - profile_logs:/app/logs
     env_file:
       - ${CRM_MONITOR_ENV_FILE:-.env}
     environment:
       AGENT_HOST: 0.0.0.0
       AGENT_PORT: "8091"
+      PUBLISHED_QUERY_DIR: /app/published_queries
       AGENT_CORS_ALLOW_ORIGINS: http://127.0.0.1:8088
       AGENT_MCP_URL: http://mcp-graphdb:8090
       MCP_HOST: mcp-graphdb
       MCP_PORT: "8090"
       RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      YANDEX_CLIENT_ID: ""
+      YANDEX_CLIENT_SECRET: ""
+      YANDEX_REDIRECT_URI: ""
+      YANDEX_SCOPES: ""
+      YANDEX_AUTH_URL: ""
+      YANDEX_TOKEN_URL: ""
+      YANDEX_PROFILE_URL: ""
+      AUTH_INTERNAL_SECRET: ""
     command: ["python", "agent_service.py"]
-    ports:
-      - "127.0.0.1:${AGENT_SERVICE_PORT:-8091}:8091"
     depends_on:
       - mcp-graphdb
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - rdf_store
+      - agent_internal
 
   mcp-graphdb:
     build:
       context: .
       dockerfile: Dockerfile
+      target: mcp
     restart: unless-stopped
     init: true
     read_only: true
@@ -82,19 +230,36 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8090"
       RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      YANDEX_CLIENT_ID: ""
+      YANDEX_CLIENT_SECRET: ""
+      YANDEX_REDIRECT_URI: ""
+      YANDEX_SCOPES: ""
+      YANDEX_AUTH_URL: ""
+      YANDEX_TOKEN_URL: ""
+      YANDEX_PROFILE_URL: ""
+      AUTH_INTERNAL_SECRET: ""
     command: ["python", "-m", "mcp.mcp_server"]
-    ports:
-      - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - rdf_store
 
 networks:
+  gateway_ingress:
   rdf_store:
     external: true
     name: ${RDF_DOCKER_NETWORK:-graphdb_default}
+  auth_internal:
+    internal: true
+  analytics_internal:
+    internal: true
+  ontology_internal:
+    internal: true
+  agent_internal:
+    internal: true
+  auth_egress:
 
 volumes:
   profile_logs:
   published_queries:
+  auth_sessions:

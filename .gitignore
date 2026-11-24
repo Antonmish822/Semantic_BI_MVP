@@ -6,6 +6,11 @@ __pycache__/
 *.py[cod]
 /logs/
 /published_queries/
+/static/react/
+/web/node_modules/
+/web/test-results/
+/web/playwright-report/
+/web/*.tsbuildinfo
 # Runtime ontology administration state; source TTL files remain versioned.
 /ontologies/.ontology-files.lock
 /ontologies/.ontology-publication.lock

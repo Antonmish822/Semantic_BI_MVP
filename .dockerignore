@@ -5,3 +5,7 @@ __pycache__/
 *.py[cod]
 tests/
 docs/*.md
+web/node_modules/
+web/test-results/
+web/playwright-report/
+web/.cache/

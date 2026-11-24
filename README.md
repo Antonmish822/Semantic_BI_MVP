@@ -79,7 +79,7 @@ python server.py
 
 ## Запуск в Docker Compose
 
-Compose собирает dashboard, agent-service и MCP из одного образа с locked dependencies, подключает их к существующей внешней Docker-сети GraphDB и публикует их порты только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, dashboard доступен на порту `8088`. Dashboard проксирует вызовы в agent-service, который обращается к MCP по внутреннему Docker DNS. Для сохранения TTL bind-mounted каталог `ontologies/` должен быть доступен дополнительной группе хоста. Настройка и команды находятся в [руководстве по онтологиям](ontologies/README.md).
+Compose поднимает Gateway, Auth, Analytics, Ontology, Agent, MCP и Redis для сессий Yandex ID. Только Gateway публикуется на хост (loopback, порт `8088` по умолчанию); внутренние сервисы соединены отдельными сетями. RDF-сервисы подключаются к существующей внешней Docker-сети GraphDB, по умолчанию `graphdb_default`, адрес GraphDB — `http://graphdb:7200`. Для сохранения TTL bind-mounted каталог `ontologies/` должен быть доступен дополнительной группе хоста. Настройка и команды находятся в [руководстве по онтологиям](ontologies/README.md).
 
 ```bash
 cp .env.example .env
@@ -104,7 +104,7 @@ CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent \
 RDF_DOCKER_NETWORK=my_graphdb_network docker compose up -d --build
 ```
 
-Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для dashboard, MCP и agent-service доступны переменные портов `CRM_PULSE_MONITOR_PORT`, `MCP_SERVER_PORT` и `AGENT_SERVICE_PORT`; внутри сети контейнеры по-прежнему слушают `8088`, `8090`, `8091`. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
+Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для отладки можно отдельно открыть loopback порты Agent и MCP, добавив `-f compose.debug.yaml` и задав `AGENT_SERVICE_PORT` / `MCP_SERVER_PORT`. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
 
 Compose запускает контейнер с read-only корневой файловой системой и временным `/tmp`. Остановить сервис:
 

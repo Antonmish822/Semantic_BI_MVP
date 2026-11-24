@@ -101,13 +101,10 @@ class OntologyAdminChecks(unittest.TestCase):
         project = Path(__file__).parents[1]
         for name in ("index.html", "leads.html", "employees.html"):
             html = (project / "static" / name).read_text(encoding="utf-8")
-            self.assertIn('href="/ontologies"', html)
+            self.assertIn('href="/tools/ontology"', html)
         for name, script in (("index.html", "/app.js"), ("leads.html", "/leads.js"),
                              ("employees.html", "/employees.js")):
             self.assertIn(f'src="{script}"', (project / "static" / name).read_text(encoding="utf-8"))
-        server = (project / "server.py").read_text(encoding="utf-8")
-        for route in ("/", "/leads", "/employees", "/api/pulse", "/api/lead-pulse"):
-            self.assertIn(f'"{route}"', server)
 
 
 if __name__ == "__main__":
