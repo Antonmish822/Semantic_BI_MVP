@@ -111,6 +111,7 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 | `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` | OAuth credentials и callback; нужны при `AUTH_ENABLED=1`. |
 | `YANDEX_SCOPES`, `YANDEX_AUTH_URL`, `YANDEX_TOKEN_URL`, `YANDEX_PROFILE_URL` | OAuth scopes и endpoint-ы Yandex ID; обычно остаются значениями из примера. |
 | `ONTOLOGY_ADMIN_TOKEN` | пусто | Общий серверный bearer token для административных операций с онтологиями и инструментами: сохранение/публикация/удаление онтологий, публикация и удаление запросов. Не путать с `MCP_AUTH_TOKEN`. |
+| `PUBLIC_ORIGIN` | пусто | Публичный origin приложения (`https://crm.example.org`, без пути), который должен совпасть с браузерным заголовком `Origin`. Задайте за reverse proxy, если он передаёт приложению внутренний `Host`; при пустом значении origin сверяется с `Host`. Применяется ко всем административным POST/DELETE операциям. |
 | `ONTOLOGY_QUARANTINE_DAYS` | Срок хранения удалённых онтологий в карантине, от 1 до 3650 дней; по умолчанию 30. |
 | `ONTOLOGY_AI_BASE_URL`, `ONTOLOGY_AI_MODEL`, `ONTOLOGY_AI_TIMEOUT`, `ONTOLOGY_AI_MAX_TOOL_CALLS` | Endpoint, модель, timeout и предел read-only ontology MCP вызовов помощника проектирования. |
 
