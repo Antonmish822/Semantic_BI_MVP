@@ -44,6 +44,34 @@ def published_query_directory() -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def _origin_parts(value: str, *, scheme: str | None = None) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        current_scheme = (parsed.scheme or scheme or "").lower()
+        hostname = parsed.hostname
+        if (current_scheme not in {"http", "https"} or not hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            return None
+        port = parsed.port or (443 if current_scheme == "https" else 80)
+        return current_scheme, hostname.casefold(), port
+    except ValueError:
+        return None
+
+
+def origin_matches_server(origin: str | None, host: str) -> bool:
+    """Validate browser Origin against an explicit public origin or direct Host."""
+    if not origin:
+        return False
+    origin_parts = _origin_parts(origin)
+    if origin_parts is None:
+        return False
+    configured = os.environ.get("PUBLIC_ORIGIN", "").strip()
+    if configured:
+        return origin_parts == _origin_parts(configured)
+    return _origin_parts(host, scheme=origin_parts[0]) == origin_parts
+
+
 CACHE_SECONDS = 30
 CACHE: dict[str, object] = {
     "pulse": {},
@@ -2133,7 +2161,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "")
-        if not origin or urlsplit(origin).netloc != host:
+        if not origin_matches_server(origin, host):
             self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
             return
         try:
@@ -2178,7 +2206,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "")
-        if not origin or urlsplit(origin).netloc != host:
+        if not origin_matches_server(origin, host):
             self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
             return
         try:
@@ -2217,7 +2245,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "")
-        if not origin or urlsplit(origin).netloc != host:
+        if not origin_matches_server(origin, host):
             self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
             return
         try:
