@@ -116,12 +116,13 @@ class OntologyAssistantChecks(unittest.TestCase):
     def test_unsaved_editor_text_is_sent_separately_from_saved_sha(self):
         slug = "lead-classification"
         path = Path(__file__).parents[1] / "ontologies" / f"{slug}.ttl"
-        saved = path.read_text()
+        saved_bytes = path.read_bytes()
+        saved = saved_bytes.decode("utf-8")
         editor = saved + "\n# unsaved editor-only note\n"
         ttl = f"<urn:bitrix24:ontology:{slug}> a <http://www.w3.org/2002/07/owl#Ontology> ."
         FakeClient.completion = FakeCompletions([completion("planning"), completion(json.dumps(valid_contract(slug, ttl)))])
         payload = {"slug": slug, "editor_text": editor, "editor_sha256": hashlib.sha256(editor.encode()).hexdigest(),
-                   "file_sha256": hashlib.sha256(saved.encode()).hexdigest(), "message": "объясни"}
+                   "file_sha256": hashlib.sha256(saved_bytes).hexdigest(), "message": "объясни"}
         result = assistant.suggest(payload, {"POLZA_API_KEY": "test"}, FakeClient)
         context = next(row["content"] for row in FakeClient.completion.calls[0]["messages"]
                        if row.get("role") == "user" and "editor_text" in row.get("content", ""))
