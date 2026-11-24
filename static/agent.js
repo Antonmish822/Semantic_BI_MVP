@@ -26,7 +26,13 @@ function readStoredMessages(key) {
     if (!Array.isArray(value)) return [];
     return value.filter((item) => item &&
       (item.role === 'user' || item.role === 'assistant') &&
-      typeof item.content === 'string');
+      typeof item.content === 'string').map((item) => ({
+      role: item.role,
+      content: item.content,
+      ...(key === 'agentTranscript' && typeof item.saved_query === 'string'
+        ? { saved_query: item.saved_query }
+        : {})
+    }));
   } catch {
     return [];
   }
@@ -45,8 +51,14 @@ function readSavedPrompts() {
   try {
     const value = JSON.parse(localStorage.getItem(SAVED_PROMPTS_KEY) || '[]');
     if (!Array.isArray(value)) return [];
-    return value.filter((prompt) => typeof prompt === 'string' && prompt.trim())
-      .map((prompt) => prompt.trim()).slice(0, MAX_SAVED_PROMPTS);
+    return value.map((item) => {
+      if (typeof item === 'string' && item.trim()) return { prompt: item.trim(), sparql: '' };
+      if (!item || typeof item.prompt !== 'string' || !item.prompt.trim()) return null;
+      return {
+        prompt: item.prompt.trim(),
+        sparql: typeof item.sparql === 'string' ? item.sparql : ''
+      };
+    }).filter(Boolean).slice(0, MAX_SAVED_PROMPTS);
   } catch {
     return [];
   }
@@ -66,6 +78,23 @@ function setSavedPromptsFeedback(message = '') {
   if (savedPromptsFeedback) savedPromptsFeedback.textContent = message;
 }
 
+async function copyTextToClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const temporaryInput = document.createElement('textarea');
+  temporaryInput.value = value;
+  temporaryInput.setAttribute('readonly', '');
+  temporaryInput.style.position = 'fixed';
+  temporaryInput.style.opacity = '0';
+  document.body.append(temporaryInput);
+  temporaryInput.select();
+  const copied = document.execCommand('copy');
+  temporaryInput.remove();
+  if (!copied) throw new Error('Clipboard copy unavailable');
+}
+
 function refreshSavePromptButtons() {
   const full = savedPrompts.length >= MAX_SAVED_PROMPTS;
   document.querySelectorAll('.save-prompt-button').forEach((button) => {
@@ -80,12 +109,43 @@ function renderSavedPrompts() {
   savedPromptsList.replaceChildren();
   savedPromptsCount.textContent = `${savedPrompts.length}/${MAX_SAVED_PROMPTS}`;
   savedPromptsList.hidden = savedPrompts.length === 0;
-  for (const [index, prompt] of savedPrompts.entries()) {
+  for (const [index, saved] of savedPrompts.entries()) {
     const item = document.createElement('li');
     item.className = 'saved-prompt-item';
     const text = document.createElement('span');
     text.className = 'saved-prompt-text';
-    text.textContent = prompt;
+    text.textContent = saved.prompt;
+
+    const content = document.createElement('div');
+    content.className = 'saved-prompt-content';
+    content.append(text);
+    if (saved.sparql) {
+      const queryDetails = document.createElement('details');
+      queryDetails.className = 'saved-prompt-query';
+      const querySummary = document.createElement('summary');
+      querySummary.textContent = 'Показать SPARQL';
+      const queryHint = document.createElement('p');
+      queryHint.className = 'saved-prompt-query-hint';
+      queryHint.textContent = 'Запрос, переданный агентом инструменту sparql_select. MCP проверяет его и может применить ограничения перед выполнением.';
+      const queryCode = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = saved.sparql;
+      queryCode.append(code);
+      const copyButton = document.createElement('button');
+      copyButton.type = 'button';
+      copyButton.className = 'saved-prompt-button';
+      copyButton.textContent = 'Копировать SPARQL';
+      copyButton.addEventListener('click', async () => {
+        try {
+          await copyTextToClipboard(saved.sparql);
+          setSavedPromptsFeedback('SPARQL скопирован.');
+        } catch {
+          setSavedPromptsFeedback('Не удалось скопировать запрос. Разрешите доступ к буферу обмена в браузере.');
+        }
+      });
+      queryDetails.append(querySummary, queryHint, queryCode, copyButton);
+      content.append(queryDetails);
+    }
 
     const actions = document.createElement('div');
     actions.className = 'saved-prompt-actions';
@@ -94,9 +154,9 @@ function renderSavedPrompts() {
     useButton.className = 'saved-prompt-button';
     useButton.textContent = 'Вставить';
     useButton.addEventListener('click', () => {
-      chatInput.value = prompt;
+      chatInput.value = saved.prompt;
       chatInput.focus();
-      chatInput.setSelectionRange(prompt.length, prompt.length);
+      chatInput.setSelectionRange(saved.prompt.length, saved.prompt.length);
     });
 
     const removeButton = document.createElement('button');
@@ -115,13 +175,13 @@ function renderSavedPrompts() {
     });
 
     actions.append(useButton, removeButton);
-    item.append(text, actions);
+    item.append(content, actions);
     savedPromptsList.append(item);
   }
   refreshSavePromptButtons();
 }
 
-function addSavePromptAction(messageNode, prompt) {
+function addSavePromptAction(messageNode, prompt, sparql = '') {
   if (!messageNode || messageNode.querySelector('.save-prompt-button')) return;
   const actions = document.createElement('div');
   actions.className = 'chat-message-actions';
@@ -132,7 +192,7 @@ function addSavePromptAction(messageNode, prompt) {
   button.addEventListener('click', () => {
     const normalized = prompt.trim();
     if (!normalized) return;
-    if (savedPrompts.includes(normalized)) {
+    if (savedPrompts.some((saved) => saved.prompt === normalized)) {
       setSavedPromptsFeedback('Такая формулировка уже сохранена.');
       return;
     }
@@ -140,7 +200,7 @@ function addSavePromptAction(messageNode, prompt) {
       setSavedPromptsFeedback('Достигнут лимит 10. Удалите один промпт вручную, чтобы сохранить новый.');
       return;
     }
-    savedPrompts.push(normalized);
+    savedPrompts.push({ prompt: normalized, sparql: typeof sparql === 'string' ? sparql : '' });
     if (persistSavedPrompts()) {
       renderSavedPrompts();
       setSavedPromptsFeedback('Промпт сохранён.');
@@ -156,15 +216,18 @@ function addSavePromptAction(messageNode, prompt) {
 function restoreChat() {
   let lastUserNode = null;
   let lastUserPrompt = '';
+  let lastUserSavedQuery = '';
   for (const item of transcript) {
     const node = renderMessage(item.role, item.content);
     if (item.role === 'user') {
       lastUserNode = node;
       lastUserPrompt = item.content;
+      lastUserSavedQuery = item.saved_query || '';
     } else if (lastUserNode) {
-      addSavePromptAction(lastUserNode, lastUserPrompt);
+      addSavePromptAction(lastUserNode, lastUserPrompt, lastUserSavedQuery);
       lastUserNode = null;
       lastUserPrompt = '';
+      lastUserSavedQuery = '';
     }
   }
   if (transcript.length) setStatus('online', 'Агент онлайн');
@@ -233,55 +296,6 @@ function appendInlineMarkdown(parent, text) {
 
 function markdownCells(line) {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
-}
-
-function sanitizeCsvValue(value) {
-  const text = String(value ?? '').replace(/\r\n?/g, '\n');
-  if (/["\n,;]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function tableToCsv(table) {
-  const rows = Array.from(table.querySelectorAll('tr'));
-  return rows.map((row) => {
-    const cells = Array.from(row.querySelectorAll('th, td'));
-    return cells.map((cell) => sanitizeCsvValue(cell.textContent?.trim() || '')).join(',');
-  }).join('\n');
-}
-
-function downloadTableAsCsv(table, filename) {
-  const csv = tableToCsv(table);
-  const blob = new Blob(["\ufeff", csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function ensureSheetJs() {
-  if (window.XLSX) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = '/vendor/xlsx.full.min.js';
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Не удалось загрузить SheetJS'));
-    document.head.append(script);
-  });
-}
-
-async function downloadTableAsXlsx(table, filename) {
-  await ensureSheetJs();
-  const workbook = window.XLSX.utils.table_to_book(table, { sheet: 'Данные' });
-  window.XLSX.writeFile(workbook, filename);
 }
 
 function isTableDivider(line) {
@@ -354,29 +368,9 @@ function renderMarkdown(parent, markdown) {
       table.append(tbody);
       const wrapper = document.createElement('div');
       wrapper.className = 'chat-table-wrap';
-      const actions = document.createElement('div');
-      actions.className = 'chat-table-actions';
-      const downloadCsv = document.createElement('button');
-      downloadCsv.type = 'button';
-      downloadCsv.className = 'chat-table-download';
-      downloadCsv.textContent = 'Скачать CSV';
-      downloadCsv.addEventListener('click', () => {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        downloadTableAsCsv(table, `agent-table-${timestamp}.csv`);
+      const actions = TableExport.createButtons(table, 'agent-table', (error) => {
+        setError(error?.message || 'Не удалось скачать Excel');
       });
-      const downloadExcel = document.createElement('button');
-      downloadExcel.type = 'button';
-      downloadExcel.className = 'chat-table-download chat-table-download--excel';
-      downloadExcel.textContent = 'Скачать Excel';
-      downloadExcel.addEventListener('click', async () => {
-        try {
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          await downloadTableAsXlsx(table, `agent-table-${timestamp}.xlsx`);
-        } catch (error) {
-          setError(error?.message || 'Не удалось скачать Excel');
-        }
-      });
-      actions.append(downloadCsv, downloadExcel);
       wrapper.append(actions, table);
       parent.append(wrapper);
       continue;
@@ -500,7 +494,8 @@ async function sendMessage(text) {
     }).catch(() => {});
   };
   const userMessageNode = renderMessage('user', text);
-  transcript.push({ role: 'user', content: text });
+  const transcriptUserMessage = { role: 'user', content: text };
+  transcript.push(transcriptUserMessage);
   saveStoredMessages();
   agentProgress.hidden = false;
   agentProgressStage.textContent = 'Подготавливаю запрос';
@@ -550,7 +545,8 @@ async function sendMessage(text) {
     renderToolState(data);
     const reply = data.reply || 'Нет ответа от агента.';
     renderMessage('assistant', reply, { durationMs: performance.now() - startedAt });
-    addSavePromptAction(userMessageNode, text);
+    if (typeof data.saved_query === 'string') transcriptUserMessage.saved_query = data.saved_query;
+    addSavePromptAction(userMessageNode, text, data.saved_query || '');
     transcript.push({ role: 'assistant', content: reply });
     history = Array.isArray(data.history) ? data.history : history;
     saveStoredMessages();

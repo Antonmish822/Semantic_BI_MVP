@@ -1,8 +1,14 @@
 (() => {
   const $ = id => document.getElementById(id);
   const state = { slug: null, sha: null, savedText: '', dirty: false, assistantHistory: [], assistantResult: null, assistantReady: false, assistantSlug: null };
-  const tokenStorageKey = 'crm-pulse-ontology-admin-token';
-  try { $('admin-token').value=localStorage.getItem(tokenStorageKey)||''; } catch (_) {}
+  const tokenStorageKey = 'crm-pulse-tools-admin-token';
+  const legacyTokenStorageKey = 'crm-pulse-ontology-admin-token';
+  try {
+    const savedToken = localStorage.getItem(tokenStorageKey) || localStorage.getItem(legacyTokenStorageKey) || '';
+    $('admin-token').value=savedToken;
+    if (savedToken) localStorage.setItem(tokenStorageKey,savedToken);
+    localStorage.removeItem(legacyTokenStorageKey);
+  } catch (_) {}
   $('admin-token').addEventListener('input',()=>{
     try { if(token())localStorage.setItem(tokenStorageKey,token());else localStorage.removeItem(tokenStorageKey); } catch (_) {}
   });

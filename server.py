@@ -29,11 +29,21 @@ from ontology_assistant import (MAX_ASSISTANT_BODY, AssistantError, assistant_co
                                 suggest as suggest_ontology, version_for)
 from rdflib import Graph
 from ontology import class_statistics
+from query_library import (QueryLibraryError, delete_published_query,
+                           list_published_queries, publish_query)
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 DOCS = ROOT / "docs"
 RULES = ROOT / "rules"
+
+
+def published_query_directory() -> Path:
+    configured = os.environ.get("PUBLISHED_QUERY_DIR", "").strip()
+    path = Path(configured) if configured else ROOT / "published_queries"
+    return path if path.is_absolute() else ROOT / path
+
+
 CACHE_SECONDS = 30
 CACHE: dict[str, object] = {
     "pulse": {},
@@ -379,7 +389,7 @@ def _is_public_path(path: str) -> bool:
 
 
 def _is_static_asset(path: str) -> bool:
-    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/styles.css"} or path.startswith("/vendor/")
+    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/queries.js", "/published_queries.js", "/query_results.js", "/query_parameters.js", "/table_export.js", "/styles.css"} or path.startswith("/vendor/")
 
 
 def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
@@ -1623,6 +1633,7 @@ class Handler(BaseHTTPRequestHandler):
         return path.startswith("/api/") or path in {
             "/", "/index.html", "/leads", "/leads.html", "/employees", "/employees.html",
             "/agent", "/agent.html", "/ontologies", "/ontologies.html",
+            "/tools", "/tools/ontology", "/tools/queries", "/queries", "/published-queries",
         }
 
     def _handle_auth_gate(self, path: str) -> bool:
@@ -1698,8 +1709,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "employees.html", "text/html; charset=utf-8")
         elif path in {"/agent", "/agent.html"}:
             self._send_file(STATIC / "agent.html", "text/html; charset=utf-8")
-        elif path in {"/ontologies", "/ontologies.html"}:
+        elif path in {"/queries", "/published-queries"}:
+            self._send_file(STATIC / "published_queries.html", "text/html; charset=utf-8")
+        elif path in {"/ontologies", "/ontologies.html", "/tools", "/tools/ontology"}:
             self._send_file(STATIC / "ontologies.html", "text/html; charset=utf-8")
+        elif path == "/tools/queries":
+            self._send_file(STATIC / "queries.html", "text/html; charset=utf-8")
         elif path == "/app.js":
             self._send_file(STATIC / "app.js", "text/javascript; charset=utf-8")
         elif path == "/leads.js":
@@ -1710,12 +1725,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
         elif path == "/ontologies.js":
             self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
+        elif path == "/queries.js":
+            self._send_file(STATIC / "queries.js", "text/javascript; charset=utf-8")
+        elif path == "/published_queries.js":
+            self._send_file(STATIC / "published_queries.js", "text/javascript; charset=utf-8")
+        elif path == "/query_results.js":
+            self._send_file(STATIC / "query_results.js", "text/javascript; charset=utf-8")
+        elif path == "/query_parameters.js":
+            self._send_file(STATIC / "query_parameters.js", "text/javascript; charset=utf-8")
+        elif path == "/table_export.js":
+            self._send_file(STATIC / "table_export.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
         elif path == "/api/ontology-assistant/config":
             config = assistant_config()
             self._send_json(200, {"enabled": config["enabled"], "model": config["model"],
                                   "allowed_actions": config["allowed_actions"]})
+        elif path == "/api/published-queries":
+            try:
+                self._send_json(200, {"queries": list_published_queries(published_query_directory()),
+                                      "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
+            except QueryLibraryError as exc:
+                self._send_json(exc.status, {"error": str(exc)})
         elif path == "/api/ontology-assistant/version":
             try:
                 params = parse_qs(urlsplit(self.path).query)
@@ -2053,14 +2084,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ontology-assistant/suggest":
             self._ontology_assistant_suggest()
             return
+        if path == "/api/published-queries":
+            self._published_query_write("POST")
+            return
         if path == "/api/ontologies" or path.startswith("/api/ontologies/"):
             self._ontology_write("POST")
             return
-        if path in {"/api/agent/profile", "/api/agent"}:
+        if path in {"/api/agent/profile", "/api/agent", "/api/agent/query"}:
             if agent_mode() != "proxy":
                 self._send_json(404, {"error": "Agent proxy disabled"})
                 return
-            max_bytes = 4096 if path == "/api/agent/profile" else 512 * 1024
+            max_bytes = 4096 if path == "/api/agent/profile" else (20 * 1024 if path == "/api/agent/query" else 512 * 1024)
             raw = self._read_raw_body(max_bytes=max_bytes)
             if raw is None:
                 self._send(400, b"", "text/plain")
@@ -2087,6 +2121,52 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.log_error("Ontology class statistics failed (%s)", type(exc).__name__)
             self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища", "status": "unavailable"})
+
+    def _published_query_write(self, method: str) -> None:
+        path = urlsplit(self.path).path
+        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        if not token:
+            self._send_json(503, {"error": "Публикация запросов отключена: задайте ONTOLOGY_ADMIN_TOKEN"})
+            return
+        if not admin_token_matches(self.headers.get("Authorization", ""), token):
+            self._send_json(401, {"error": "Требуется токен администратора инструментов"})
+            return
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if not origin or urlsplit(origin).netloc != host:
+            self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
+            return
+        try:
+            if method == "POST":
+                payload = _read_json_body(self, max_bytes=24 * 1024)
+                if not isinstance(payload, dict):
+                    self._send_json(400, {"error": "Ожидается JSON-объект"})
+                    return
+                if set(payload) != {"title", "description", "query"}:
+                    self._send_json(400, {"error": "Передайте title, description и query"})
+                    return
+                entry = publish_query(published_query_directory(), payload["title"],
+                                      payload["description"], payload["query"])
+                self._send_json(201, {"query": entry})
+                return
+            query_id = path.removeprefix("/api/published-queries/")
+            if not query_id or "/" in query_id:
+                self._send_json(404, {"error": "Опубликованный запрос не найден"})
+                return
+            delete_published_query(published_query_directory(), query_id)
+            self._send_json(200, {"deleted": True, "id": query_id})
+        except QueryLibraryError as exc:
+            self._send_json(exc.status, {"error": str(exc)})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc) or "Некорректный JSON"})
+        except PermissionError:
+            self._send_json(503, {"error": "Каталог опубликованных запросов недоступен для записи"})
+        except OSError as exc:
+            self.log_error("Published query operation failed (%s)", type(exc).__name__)
+            self._send_json(503, {"error": "Не удалось сохранить каталог опубликованных запросов"})
+        except Exception as exc:
+            self.log_error("Published query operation failed (%s)", type(exc).__name__)
+            self._send_json(500, {"error": "Операция публикации запроса не выполнена"})
 
     def _ontology_assistant_suggest(self) -> None:
         token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
@@ -2216,6 +2296,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
 
     def do_DELETE(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if self._handle_auth_routes(path):
+            return
+        if self._handle_auth_gate(path):
+            return
+        if path.startswith("/api/published-queries/"):
+            self._published_query_write("DELETE")
+            return
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
 
     def _send_file(self, path: Path, content_type: str) -> None:

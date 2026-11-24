@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -936,6 +936,172 @@ async def agent(request: FastAPIRequest) -> JSONResponse:
     )
 
 
+@app.post("/api/agent/query")
+async def agent_query_debug(request: FastAPIRequest) -> JSONResponse:
+    raw = await request.body()
+    request_id = profile_request_id(request.headers.get("X-Request-ID", ""))
+    return await run_in_threadpool(_run_query_debug, raw, request_id)
+
+
+def _run_query_debug(raw: bytes, request_id: str) -> JSONResponse:
+    started = time.monotonic()
+    outcome = "error"
+    status = 500
+    query_bytes = 0
+    parameter_count = 0
+    mcp_calls = 0
+    payload: dict[str, object]
+    try:
+        if not raw or len(raw) > 20 * 1024:
+            raise ValueError("Размер запроса превышает лимит 20 КБ")
+        request_payload = _read_json_body(raw, max_bytes=20 * 1024)
+        if not isinstance(request_payload, dict):
+            raise ValueError("Ожидался JSON-объект")
+        if set(request_payload) not in ({"query"}, {"query", "parameters"}):
+            raise ValueError("Допустимо передать поля query и parameters")
+        query = request_payload.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Укажите SPARQL-запрос")
+        query = query.strip()
+        parameter_values = request_payload.get("parameters", {})
+        if not isinstance(parameter_values, dict):
+            raise ValueError("Поле parameters должно быть объектом")
+        parameter_count = len(parameter_values)
+        query = _render_parameterized_query(query, parameter_values)
+        query_bytes = len(query.encode("utf-8"))
+        if query_bytes > 16 * 1024:
+            raise ValueError("SPARQL-запрос превышает лимит MCP 16 КБ")
+        if "sparql_select" not in _allowed_agent_tools():
+            outcome, status = "tool_disabled", 403
+            payload = {"error": "Отладка отключена: sparql_select не разрешён для агента"}
+            return _json_response(payload, status, request_id)
+
+        mcp_calls += 1
+        tools = _mcp_tools_list(request_id)
+        tool = next((item for item in tools if item.get("name") == "sparql_select"), None)
+        meta = tool.get("_meta") if isinstance(tool, dict) else None
+        scope_mode = meta.get("scope_mode") if isinstance(meta, dict) else None
+        synthetic_debug_allowed = (
+            scope_mode == SYNTHETIC_MODE
+            and synthetic_repository_enabled()
+            and os.environ.get("AGENT_QUERY_DEBUG_ALLOW_SYNTHETIC", "0").strip() == "1"
+        )
+        if scope_mode != "projection" and not synthetic_debug_allowed:
+            outcome, status = "scope_denied", 403
+            payload = {"error": "Отладчик запросов разрешён для аналитической проекции. Синтетический режим включается только отдельным флагом на изолированном synthetic repository."}
+            return _json_response(payload, status, request_id)
+
+        mcp_calls += 1
+        result = _mcp_tool_call(
+            "sparql_select", {"query": query}, request_id, mcp_calls - 1,
+        )
+        safe_result = _model_safe_tool_result("sparql_select", result, synthetic=synthetic_debug_allowed)
+        tool_payload = _answer_context(safe_result) or {"status": "invalid_response"}
+        outcome = str(tool_payload.get("status", "unknown"))
+        status = 200
+        payload = {"request_id": request_id, "tool_result": safe_result}
+        return _json_response(payload, status, request_id)
+    except ValueError as exc:
+        outcome = "invalid_request"
+        status = 400
+        payload = {"error": str(exc)}
+        return _json_response(payload, status, request_id)
+    except (HTTPError, URLError, TimeoutError) as exc:
+        error = profile_error(exc)
+        outcome = "timeout" if error == "TimeoutError" else "mcp_error"
+        status = 504 if outcome == "timeout" else 502
+        payload = {"error": "MCP не смог проверить запрос"}
+        return _json_response(payload, status, request_id)
+    except Exception as exc:  # noqa: BLE001
+        outcome = profile_error(exc)
+        status = 500
+        payload = {"error": "Внутренняя ошибка отладчика запросов"}
+        return _json_response(payload, status, request_id)
+    finally:
+        profile_event(
+            "agent_query_debug", started, request_id=request_id, outcome=outcome,
+            http_status=status, error_class=None if outcome not in {"error", "mcp_error", "timeout"} else outcome,
+            query_bytes=query_bytes, parameter_count=parameter_count, mcp_calls=mcp_calls,
+        )
+
+
+_QUERY_PARAMETER = re.compile(r"\{\{([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)\}\}")
+
+
+def _sparql_string_literal(value: str) -> str:
+    escaped: list[str] = ['"']
+    escapes = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r",
+               "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+    for char in value:
+        codepoint = ord(char)
+        if char in escapes:
+            escaped.append(escapes[char])
+        elif codepoint < 0x20 or codepoint == 0x7F:
+            escaped.append(f"\\u{codepoint:04X}")
+        else:
+            escaped.append(char)
+    escaped.append('"')
+    return "".join(escaped)
+
+
+def _render_parameterized_query(query: str, parameters: dict[object, object]) -> str:
+    placeholders = _QUERY_PARAMETER.findall(query)
+    if "{{" in _QUERY_PARAMETER.sub("", query) or "}}" in _QUERY_PARAMETER.sub("", query):
+        raise ValueError("Некорректная конструкция параметра {{имя}}")
+    required = set(placeholders)
+    if len(required) > 20:
+        raise ValueError("Допускается не более 20 параметров")
+    if set(parameters) != required:
+        raise ValueError("Передайте значение для каждого параметра шаблона и не добавляйте лишние")
+    prefixes = {prefix: namespace for prefix, namespace in re.findall(
+        r"\bPREFIX\s+([A-Za-z][\w-]*):\s*<([^<>\s]+)>", query, re.IGNORECASE,
+    )}
+    xsd = "http://www.w3.org/2001/XMLSchema#"
+    type_by_name: dict[str, str] = {}
+    suffix_pattern = re.compile(r"\s*\^\^\s*(?:([A-Za-z][\w-]*):([A-Za-z][\w.-]*)|<([^<>]+)>)")
+    for match in _QUERY_PARAMETER.finditer(query):
+        suffix = query[match.end():]
+        typed = suffix_pattern.match(suffix)
+        if not typed:
+            continue
+        datatype_uri = typed[3] or (prefixes.get(typed[1], "") + (typed[2] or ""))
+        if not datatype_uri.startswith(xsd):
+            continue
+        name, local_type = match.group(1), datatype_uri[len(xsd):]
+        if name in type_by_name and type_by_name[name] != local_type:
+            raise ValueError(f"Параметр {name} используется с разными типами xsd")
+        type_by_name[name] = local_type
+    literals: dict[str, str] = {}
+    for name in required:
+        value = parameters[name]
+        if not isinstance(value, str):
+            raise ValueError(f"Значение параметра {name} должно быть строкой")
+        if len(value.encode("utf-8")) > 4096:
+            raise ValueError(f"Значение параметра {name} превышает лимит 4 КБ")
+        kind = type_by_name.get(name, "")
+        try:
+            if kind in {"dateTime", "dateTimeStamp"}:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError
+            elif kind == "date":
+                date.fromisoformat(value)
+            elif kind == "time":
+                datetime_time.fromisoformat(value.replace("Z", "+00:00"))
+            elif kind == "boolean" and value not in {"true", "false", "1", "0"}:
+                raise ValueError
+            elif kind in {"integer", "nonPositiveInteger", "negativeInteger", "long", "int", "short", "byte", "nonNegativeInteger", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte", "positiveInteger"} and not re.fullmatch(r"[+-]?[0-9]+", value):
+                raise ValueError
+            elif kind == "decimal" and not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", value):
+                raise ValueError
+            elif kind in {"float", "double"} and not re.fullmatch(r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|INF|NaN)", value):
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError(f"Значение параметра {name} не соответствует xsd:{kind}") from exc
+        literals[name] = _sparql_string_literal(value)
+    return _QUERY_PARAMETER.sub(lambda match: literals[match.group(1)], query)
+
+
 def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
     set_agent_progress(request_id, "starting", "Подготавливаю запрос")
     request_started = time.monotonic()
@@ -1122,6 +1288,7 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
             reply_kind = "tool_help"
         last_tool: dict[str, object] | None = None
         last_tool_result: dict[str, object] | None = None
+        saved_query: str | None = None
         schema_cache: dict[str, dict[str, object]] = {}
         for _ in range(max_steps if help_reply is None else 0):
             content, tool_calls, reply_kind, action = request_tool_calls()
@@ -1186,6 +1353,14 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
                             if cache_schema:
                                 schema_cache[cache_key] = tool_result
                     tool_result = _model_safe_tool_result(tool_name, tool_result, synthetic=synthetic)
+                    if tool_name == "sparql_select":
+                        tool_status = _answer_context(tool_result)
+                        query_text = tool_call["arguments"].get("query")
+                        if (tool_status and tool_status.get("status") == "ok"
+                                and isinstance(query_text, str)
+                                and 0 < len(query_text.encode("utf-8")) <= 16 * 1024):
+                            # Returned only for explicit user-initiated local saving; never add it to logs.
+                            saved_query = query_text
                     called_tools.add(tool_name)
                     last_tool_result = tool_result
                     model_result = tool_result
@@ -1260,6 +1435,8 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
             response_payload["tool"] = last_tool
         if last_tool_result is not None:
             response_payload["tool_result"] = last_tool_result
+        if saved_query is not None:
+            response_payload["saved_query"] = saved_query
         http_status = 200
         outcome = "ok"
         set_agent_progress(request_id, "done", "Ответ готов")

@@ -7,6 +7,7 @@
 - Локальный запуск читает `.env`; другой путь задаётся переменной процесса `CRM_MONITOR_ENV_FILE`.
 - Docker Compose передаёт указанный `CRM_MONITOR_ENV_FILE` как `env_file` всем трём сервисам. Чтобы Compose также использовал параметры подстановки (порты, Docker-сеть, `RDF_URL_DOCKER`) из отдельного файла, запускайте `docker compose --env-file .env.ai-agent ...` и задавайте `CRM_MONITOR_ENV_FILE=.env.ai-agent`.
 - Compose принудительно задаёт внутренние адреса и bind-host контейнеров. Значения `DASHBOARD_HOST`, `DASHBOARD_PORT`, `MCP_HOST`, `AGENT_HOST` и соответствующих внутренних портов используются при локальном запуске; опубликованные на хосте порты задаются `CRM_PULSE_MONITOR_PORT`, `MCP_SERVER_PORT` и `AGENT_SERVICE_PORT`.
+- Общий каталог запросов хранится отдельно от кода в named volume `published_queries` (`/app/published_queries` в Compose); он сохраняется при пересборке и пересоздании контейнера. В локальном запуске по умолчанию используется `published_queries/` рядом с `server.py`.
 - `.env.example` содержит примерные адреса и имя репозитория. Значение `GRAPHDB_REPOSITORY` для dashboard и `MCP_SAFE_SPARQL_REPOSITORY` для безопасного SELECT — отдельные настройки и не переключают друг друга.
 
 ## RDF-хранилище и область данных
@@ -70,6 +71,8 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 | `AGENT_HOST`, `AGENT_PORT` | `127.0.0.1`, `8091` | Bind address и порт agent-service при локальном запуске; Compose меняет bind на `0.0.0.0`. |
 | `AGENT_SERVICE_PORT` | `8091` | Loopback-порт agent-service на хосте в Compose. |
 | `AGENT_TIMEOUT` | `60` секунд | Таймаут dashboard proxy при обращении к агенту. |
+| `AGENT_QUERY_DEBUG_ALLOW_SYNTHETIC` | `0` | Разрешает UI-отладчик `POST /api/agent/query` в synthetic mode, только если этот флаг равен `1`, `MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY=1` включён и на agent-service, и на MCP, а MCP сообщает scope `synthetic_repository`. Используйте только для изолированного synthetic repository; для projection значение не требуется. |
+| `PUBLISHED_QUERY_DIR` | `published_queries/` рядом с `server.py`; Compose: `/app/published_queries` | Каталог JSON-файла общего каталога; в Compose значение принудительно указывает на volume `published_queries`. Не направляйте в каталог с CRM-выгрузками. |
 | `AGENT_MCP_URL` | `http://127.0.0.1:8090` | MCP base URL для агента; агент автоматически добавляет `/mcp`. |
 | `MCP_TIMEOUT` | `30` секунд | Таймаут одного HTTP-вызова agent-service → MCP; это не GraphDB query timeout. |
 | `ONTOLOGY_MCP_URL` | `http://127.0.0.1:8090/mcp` | MCP endpoint для ontology assistant. В отличие от `AGENT_MCP_URL`, здесь укажите полный путь `/mcp`. |
@@ -89,6 +92,12 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 
 Для помощника проектирования онтологий также есть отдельные `ONTOLOGY_AI_BASE_URL`, `ONTOLOGY_AI_MODEL`, `ONTOLOGY_AI_TIMEOUT` и `ONTOLOGY_AI_MAX_TOOL_CALLS`; по умолчанию это `https://polza.ai/api/v1`, `openai/gpt-6-luna`, 60 секунд и 4 read-only вызова соответственно. API key берётся из `POLZA_API_KEY`.
 
+Отладчик запросов принимает `POST /api/agent/query` с JSON `{ "query": "...", "parameters": { "начальная_дата": "2026-01-01" } }`. Поле `parameters` можно опустить, если шаблон не содержит плейсхолдеров. Для каждого `{{имя}}` нужно передать строковое значение; лишние параметры запрещены, поля формы требуют заполнения. API экранирует значения и подставляет их как SPARQL string literals, ограничивает имя/число/размер значений, затем вызывает тот же MCP `sparql_select` с обычными проверками scope и policy. Плейсхолдер следует оставлять без кавычек в шаблоне. Тип введённого значения не преобразуется автоматически: поле даты передаёт ISO-строку, а подходящее сравнение зависит от типов данных и ограничений активного MCP режима. Значения не меняют сохранённый шаблон; в журналах фиксируется только число параметров.
+
+`POLZA_TIMEOUT` в коде по умолчанию равен 60 секундам, а `.env.example` задаёт 180 секунд. При заполненном env-файле действует его значение. У AI Agent и помощника онтологий независимые настройки модели и timeout; оба используют `POLZA_API_KEY`.
+
+Общий каталог на вкладке `/queries` использует `GET /api/published-queries` для чтения, `POST /api/published-queries` для публикации JSON `{ "title": "...", "description": "...", "query": "..." }` и `DELETE /api/published-queries/{id}` для удаления. Опубликованные шаблоны можно запускать прямо из каталога через `POST /api/agent/query`; параметры вводятся отдельно и результаты отображаются в таблице или JSON. Операции записи требуют bearer `ONTOLOGY_ADMIN_TOKEN` и same-origin `Origin`. POST сохраняет только шаблон, не результаты отладки и не значения `parameters`; записи переживают пересборку контейнера в named volume `published_queries`. Каталог доступен на чтение пользователям приложения, а для публикации через интерфейс требуется успешный запуск текущего шаблона через MCP.
+
 ## Dashboard, OAuth и управление онтологиями
 
 | Переменные | Назначение |
@@ -101,7 +110,7 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 | `AUTH_LOGOUT_REDIRECT`, `AUTH_DEBUG` | URL редиректа после выхода и диагностический режим OAuth. |
 | `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` | OAuth credentials и callback; нужны при `AUTH_ENABLED=1`. |
 | `YANDEX_SCOPES`, `YANDEX_AUTH_URL`, `YANDEX_TOKEN_URL`, `YANDEX_PROFILE_URL` | OAuth scopes и endpoint-ы Yandex ID; обычно остаются значениями из примера. |
-| `ONTOLOGY_ADMIN_TOKEN` | Серверный токен для сохранения/публикации/удаления онтологий через административную страницу. Не путать с `MCP_AUTH_TOKEN`. |
+| `ONTOLOGY_ADMIN_TOKEN` | пусто | Общий серверный bearer token для административных операций с онтологиями и инструментами: сохранение/публикация/удаление онтологий, публикация и удаление запросов. Не путать с `MCP_AUTH_TOKEN`. |
 | `ONTOLOGY_QUARANTINE_DAYS` | Срок хранения удалённых онтологий в карантине, от 1 до 3650 дней; по умолчанию 30. |
 | `ONTOLOGY_AI_BASE_URL`, `ONTOLOGY_AI_MODEL`, `ONTOLOGY_AI_TIMEOUT`, `ONTOLOGY_AI_MAX_TOOL_CALLS` | Endpoint, модель, timeout и предел read-only ontology MCP вызовов помощника проектирования. |
 
@@ -121,3 +130,9 @@ Synthetic mode требует `MCP_ENABLE_SAFE_SPARQL=1`, `AGENT_ALLOW_SPARQL=1`
 | `RDF_DOCKER_NETWORK` | `graphdb_default` | Существующая внешняя сеть RDF store. |
 
 Переменные портов и сети доступны в [`.env.example`](../.env.example), а команды запуска — в [основном README](../README.md) и [руководстве MCP](../README_MCP.md).
+
+## Параметры тестового стенда
+
+| Переменная | Значение по умолчанию | Назначение |
+|---|---:|---|
+| `AGENT_BENCH_N` | `20` | Число повторов на вариант в детерминированном сравнении контекстов `tests/bench_agent_context_modes.py`. Скрипт использует заглушки модели, MCP и синтетические фикстуры; это тестовая переменная, её не нужно задавать в рабочем `.env`. |

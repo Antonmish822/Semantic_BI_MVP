@@ -58,7 +58,7 @@ cp .env.example .env
 - задайте `GRAPH_PREFIX` для RDF-проекции. Пример адреса, repository и префикса показан в [`.env.example`](.env.example); подставьте значения вашего GraphDB стенда;
 - если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`;
 - для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
-- задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить сохранение и публикацию онтологий; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
+- задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить административные операции с онтологиями и инструментами, включая публикацию запросов; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
 
 Установите зависимости и запустите сервисы в отдельных терминалах:
 
@@ -114,32 +114,18 @@ docker compose down
 
 ## AI Agent (Polza.ai + MCP)
 
-Минимальный HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/agent/progress` и проксируется дашбордом на выделенный сервис агента. История сообщений хранится в памяти процесса агента по `session_id`.
+HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/agent/progress` и `/api/agent/query`; запросы проксируются дашбордом на выделенный сервис агента. История сообщений хранится в памяти процесса агента по `session_id`.
 
 Режимы маршрутизации:
 
 - `AGENT_MODE=proxy` — браузер вызывает `POST /api/agent` на дашборде, дашборд проксирует запросы в `AGENT_BASE_URL`.
 - `AGENT_MODE=direct` — дашборд отключает агентский proxy (возвращает 404 на `/api/agent*`).
 
-Переменные окружения:
-
-- `AGENT_MODE` — режим маршрутизации (`proxy` или `direct`);
-- `AGENT_BASE_URL` — базовый URL сервиса агента (по умолчанию `http://127.0.0.1:8091`);
-- `AGENT_TIMEOUT` — таймаут проксирования к агенту;
-- `AGENT_CORS_ALLOW_ORIGINS` — CORS-оригины для сервиса агента (по умолчанию `*`);
-- `AGENT_ALLOW_SPARQL` — разрешить AI Agent выбирать `sparql_select` (`0/1`; MCP независимо проверяет серверные условия);
-- `POLZA_BASE_URL` — базовый URL API (по умолчанию `https://polza.ai/api/v1`);
-- `POLZA_API_KEY` — ключ доступа к Polza.ai;
-- `POLZA_MODEL` — модель Polza.ai (по умолчанию `polza-chat`);
-- `POLZA_TIMEOUT` — таймаут запросов Polza.ai в секундах (по умолчанию `60`);
-- `MCP_TIMEOUT` — timeout одного вызова агента к MCP в секундах (по умолчанию `30`);
-- `AGENT_MAX_HISTORY` — максимальное число сообщений в истории (по умолчанию `12`);
-- `AGENT_CONTEXT_MODE` — режим контекста `baseline`, `p1` или `p2` (по умолчанию `baseline`; для стендового сравнения, применяется после перезапуска `agent-service`);
-- `AGENT_HISTORY_MAX_BYTES` — предел истории, отправляемой модели в режиме `p2` (по умолчанию `24000` байт);
-- `AGENT_SCHEMA_MAX_BYTES` — бюджет компактной схемы для `p1`/`p2` (по умолчанию `64000` байт);
-- `AGENT_SYSTEM_PROMPT` — системный промпт агента (опционально).
+Описание всех переменных, их defaults, областей действия и различий между режимами приведено в [справочнике конфигурации](docs/CONFIGURATION.md); безопасный шаблон для настройки — [`.env.example`](.env.example). В частности, `AGENT_CONTEXT_MODE` принимает `baseline`, `p1` или `p2` и применяется после перезапуска `agent-service`. Отладчик SPARQL на `/tools/queries` вызывает только MCP; запуск в synthetic mode требует отдельного `AGENT_QUERY_DEBUG_ALLOW_SYNTHETIC=1` и изолированного synthetic repository. Этот флаг не требуется для разрешённой аналитической проекции. В запросе можно использовать `{{параметр}}`; `POST /api/agent/query` принимает шаблон в поле `query` и объект строковых значений `parameters`, экранирует значения как SPARQL string literals и передаёт результат штатной MCP-проверке. Формы определяют `xsd:dateTime`, `xsd:date`, `xsd:time`, boolean и числовые типы; `dateTime` из поля браузера преобразуется в UTC, а сервер проверяет лексический формат перед подстановкой. Успешно проверенный шаблон можно опубликовать на вкладку `/queries`; опубликованные запросы запускаются прямо из каталога, каталог хранится в Docker volume, а операции записи требуют `ONTOLOGY_ADMIN_TOKEN`.
 
 Интерфейс чата доступен по адресу `/agent`.
+
+Таблицы AI Agent и результаты опубликованных SPARQL-запросов используют общий браузерный экспорт в CSV и XLSX.
 
 ## Структура
 
@@ -147,9 +133,10 @@ docker compose down
 - `agent_service.py` — HTTP API агента (FastAPI) и логика Polza.ai + MCP;
 - `ontology_admin.py` — безопасное сохранение TTL и публикация через Graph Store Protocol;
 - `ontology_assistant.py` — контекст и read-only инструменты помощника онтологий;
+- `query_library.py` — атомарное файловое хранилище общего каталога опубликованных SPARQL-шаблонов;
 - `ontologies/` — Turtle-аксиомы, доступные для редактирования на странице `/ontologies`;
 - `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
-- `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html` — страницы интерфейса;
+- `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html`, `static/published_queries.html` — страницы интерфейса;
 - `static/*.js` и `static/styles.css` — клиентская логика и стили;
 - `docs/` — справочные материалы о доступных RDF-признаках и онтологии.
 
