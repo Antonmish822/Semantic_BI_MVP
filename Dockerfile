@@ -12,6 +12,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
+COPY security_controls.py transport.py model_http.py profile_log.py ./
 COPY server.py ./server.py
 COPY agent_service.py ./agent_service.py
 COPY mcp ./mcp
@@ -20,6 +21,7 @@ COPY ontology_assistant.py ./ontology_assistant.py
 COPY ontology ./ontology
 COPY ontologies ./ontologies
 COPY queries ./queries
+COPY rules ./rules
 COPY docs ./docs
 COPY .agents ./.agents
 COPY static ./static

@@ -1,97 +1,140 @@
+x-runtime: &runtime
+  build: .
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  tmpfs: [/tmp]
+
 services:
   crm-pulse-monitor:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    read_only: true
-    tmpfs:
-      - /tmp
-    volumes:
-      - profile_logs:/app/logs
-      - ./ontologies:/app/ontologies:rw
-    env_file:
-      - ${CRM_MONITOR_ENV_FILE:-.env}
+    <<: *runtime
     environment:
-      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_HOST: "0.0.0.0"
       DASHBOARD_PORT: "8088"
-      AGENT_MODE: proxy
-      AGENT_BASE_URL: http://agent-service:8091
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
-      ONTOLOGY_MCP_URL: http://mcp-graphdb:8090/mcp
-    ports:
-      - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
-    depends_on:
-      - agent-service
-      - mcp-graphdb
-    group_add:
-      - "${CRM_MONITOR_GID:-1000}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - rdf_store
+      AGENT_MODE: "proxy"
+      AGENT_BASE_URL: "http://agent-service:8091"
+      RDF_URL: "${RDF_URL_DOCKER:-http://graphdb:7200}"
+      ONTOLOGY_MCP_URL: "http://mcp-graphdb:8090/mcp"
+      RDF_BACKEND: "${RDF_BACKEND:-graphdb}"
+      GRAPHDB_REPOSITORY: "${GRAPHDB_REPOSITORY:-bitrix24_v2_parallel_2}"
+      GRAPH_PREFIX: "${GRAPH_PREFIX:-urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:}"
+      RDF_USERNAME: "${RDF_USERNAME:-}"
+      RDF_PASSWORD: "${RDF_PASSWORD:-}"
+      RDF_TIMEOUT: "${RDF_TIMEOUT:-45}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-1}"
+      AUTH_COOKIE_NAME: "${AUTH_COOKIE_NAME:-crm_pulse_session}"
+      AUTH_COOKIE_MAX_AGE: "${AUTH_COOKIE_MAX_AGE:-86400}"
+      AUTH_COOKIE_DOMAIN: "${AUTH_COOKIE_DOMAIN:-}"
+      AUTH_COOKIE_SAME_SITE: "${AUTH_COOKIE_SAME_SITE:-Lax}"
+      AUTH_COOKIE_SECURE: "${AUTH_COOKIE_SECURE:-0}"
+      AUTH_ALLOWED_EMAILS: "${AUTH_ALLOWED_EMAILS:-}"
+      AUTH_ALLOWED_ORIGINS: "${AUTH_ALLOWED_ORIGINS:-http://127.0.0.1:8088,http://localhost:8088,http://127.0.0.1:8085,http://localhost:8085}"
+      AUTH_ALLOWED_DOMAINS: "${AUTH_ALLOWED_DOMAINS:-}"
+      AUTH_LOGOUT_REDIRECT: "${AUTH_LOGOUT_REDIRECT:-/}"
+      AUTH_DEBUG: "${AUTH_DEBUG:-0}"
+      YANDEX_CLIENT_ID: "${YANDEX_CLIENT_ID:-}"
+      YANDEX_CLIENT_SECRET: "${YANDEX_CLIENT_SECRET:-}"
+      YANDEX_REDIRECT_URI: "${YANDEX_REDIRECT_URI:-http://127.0.0.1:8088/auth/callback}"
+      YANDEX_SCOPES: "${YANDEX_SCOPES:-login:email login:info}"
+      YANDEX_AUTH_URL: "${YANDEX_AUTH_URL:-https://oauth.yandex.ru/authorize}"
+      YANDEX_TOKEN_URL: "${YANDEX_TOKEN_URL:-https://oauth.yandex.ru/token}"
+      YANDEX_PROFILE_URL: "${YANDEX_PROFILE_URL:-https://login.yandex.ru/info}"
+      POLZA_API_KEY: "${POLZA_API_KEY:-}"
+      POLZA_ALLOWED_HOSTS: "${POLZA_ALLOWED_HOSTS:-polza.ai}"
+      LLM_EXTERNAL_DATA_APPROVED: "${LLM_EXTERNAL_DATA_APPROVED:-0}"
+      AGENT_SERVICE_TOKEN: "${AGENT_SERVICE_TOKEN:-}"
+      AGENT_TIMEOUT: "${AGENT_TIMEOUT:-60}"
+      ONTOLOGY_ADMIN_TOKEN: "${ONTOLOGY_ADMIN_TOKEN:-}"
+      ONTOLOGY_RDF_USERNAME: "${ONTOLOGY_RDF_USERNAME:-}"
+      ONTOLOGY_RDF_PASSWORD: "${ONTOLOGY_RDF_PASSWORD:-}"
+      ONTOLOGY_MCP_TOKEN: "${ONTOLOGY_MCP_TOKEN:-}"
+      ONTOLOGY_AI_BASE_URL: "${ONTOLOGY_AI_BASE_URL:-https://polza.ai/api/v1}"
+      ONTOLOGY_AI_MODEL: "${ONTOLOGY_AI_MODEL:-openai/gpt-6-luna}"
+      ONTOLOGY_AI_TIMEOUT: "${ONTOLOGY_AI_TIMEOUT:-60}"
+      ONTOLOGY_AI_MAX_TOOL_CALLS: "${ONTOLOGY_AI_MAX_TOOL_CALLS:-4}"
+      ONTOLOGY_QUARANTINE_DAYS: "${ONTOLOGY_QUARANTINE_DAYS:-30}"
+      CACHE_FALLBACK_ENABLED: "${CACHE_FALLBACK_ENABLED:-true}"
+    volumes:
+      - dashboard_logs:/app/logs
+      - ./ontologies:/app/ontologies:rw
+    group_add: ["${CRM_MONITOR_GID:-1000}"]
+    ports: ["127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"]
+    depends_on: [agent-service, mcp-graphdb]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [service_net, rdf_store]
 
   agent-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    read_only: true
-    tmpfs:
-      - /tmp
-    volumes:
-      - profile_logs:/app/logs
-    env_file:
-      - ${CRM_MONITOR_ENV_FILE:-.env}
+    <<: *runtime
     environment:
-      AGENT_HOST: 0.0.0.0
+      AGENT_HOST: "0.0.0.0"
       AGENT_PORT: "8091"
-      AGENT_CORS_ALLOW_ORIGINS: http://127.0.0.1:8088
-      AGENT_MCP_URL: http://mcp-graphdb:8090
-      MCP_HOST: mcp-graphdb
-      MCP_PORT: "8090"
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      AGENT_MCP_URL: "http://mcp-graphdb:8090"
+      POLZA_API_KEY: "${POLZA_API_KEY:-}"
+      POLZA_ALLOWED_HOSTS: "${POLZA_ALLOWED_HOSTS:-polza.ai}"
+      LLM_EXTERNAL_DATA_APPROVED: "${LLM_EXTERNAL_DATA_APPROVED:-0}"
+      POLZA_MODEL: "${POLZA_MODEL:-openai/gpt-6-luna}"
+      POLZA_TIMEOUT: "${POLZA_TIMEOUT:-180}"
+      POLZA_BASE_URL: "${POLZA_BASE_URL:-https://polza.ai/api/v1}"
+      AGENT_SERVICE_TOKEN: "${AGENT_SERVICE_TOKEN:-}"
+      AGENT_MCP_AUTH_TOKEN: "${AGENT_MCP_AUTH_TOKEN:-${MCP_AUTH_TOKEN:-}}"
+      AGENT_TURN_TIMEOUT: "${AGENT_TURN_TIMEOUT:-50}"
+      AGENT_MAX_HISTORY: "${AGENT_MAX_HISTORY:-12}"
+      AGENT_MAX_STEPS: "${AGENT_MAX_STEPS:-4}"
+      AGENT_ALLOW_SPARQL: "${AGENT_ALLOW_SPARQL:-0}"
+      AGENT_SYSTEM_PROMPT: "${AGENT_SYSTEM_PROMPT:-}"
+      MCP_TIMEOUT: "${MCP_TIMEOUT:-30}"
+      MCP_ENABLE_SAFE_SPARQL: "${MCP_ENABLE_SAFE_SPARQL:-0}"
+      MCP_SAFE_SPARQL_POLICY_JSON: "${MCP_SAFE_SPARQL_POLICY_JSON:-}"
+      MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY: "${MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY:-0}"
+      MCP_SAFE_SPARQL_MAX_ROWS: "${MCP_SAFE_SPARQL_MAX_ROWS:-100}"
+    volumes: [agent_logs:/app/logs]
     command: ["python", "agent_service.py"]
-    ports:
-      - "127.0.0.1:${AGENT_SERVICE_PORT:-8091}:8091"
-    depends_on:
-      - mcp-graphdb
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - rdf_store
+    depends_on: [mcp-graphdb]
+    networks: [service_net]
 
   mcp-graphdb:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    read_only: true
-    tmpfs:
-      - /tmp
-    volumes:
-      - profile_logs:/app/logs
-    env_file:
-      - ${CRM_MONITOR_ENV_FILE:-.env}
+    <<: *runtime
     environment:
-      MCP_HOST: 0.0.0.0
+      MCP_HOST: "0.0.0.0"
       MCP_PORT: "8090"
-      RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
+      RDF_URL: "${RDF_URL_DOCKER:-http://graphdb:7200}"
+      RDF_BACKEND: "${RDF_BACKEND:-graphdb}"
+      GRAPHDB_REPOSITORY: "${GRAPHDB_REPOSITORY:-bitrix24_v2_parallel_2}"
+      GRAPH_PREFIX: "${GRAPH_PREFIX:-urn:bitrix24:entity:garpix-bitrix24-ru-v2-parallel:}"
+      RDF_USERNAME: "${RDF_USERNAME:-}"
+      RDF_PASSWORD: "${RDF_PASSWORD:-}"
+      RDF_TIMEOUT: "${RDF_TIMEOUT:-45}"
+      ONTOLOGY_DATA_NAMESPACE: "${ONTOLOGY_DATA_NAMESPACE:-https://example.org/bitrix24#}"
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
+      ONTOLOGY_MCP_TOKEN: "${ONTOLOGY_MCP_TOKEN:-}"
+      AUTH_ALLOWED_ORIGINS: "${AUTH_ALLOWED_ORIGINS:-http://127.0.0.1:8088,http://localhost:8088,http://127.0.0.1:8085,http://localhost:8085}"
+      MCP_ENABLE_SAFE_SPARQL: "${MCP_ENABLE_SAFE_SPARQL:-0}"
+      MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY: "${MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY:-0}"
+      MCP_SAFE_SPARQL_SYNTHETIC_ANONYMOUS: "${MCP_SAFE_SPARQL_SYNTHETIC_ANONYMOUS:-0}"
+      MCP_SAFE_SPARQL_URL: "${MCP_SAFE_SPARQL_URL:-}"
+      MCP_SAFE_SPARQL_REPOSITORY: "${MCP_SAFE_SPARQL_REPOSITORY:-}"
+      MCP_SAFE_SPARQL_GRAPH_PREFIX: "${MCP_SAFE_SPARQL_GRAPH_PREFIX:-}"
+      MCP_SAFE_SPARQL_USERNAME: "${MCP_SAFE_SPARQL_USERNAME:-}"
+      MCP_SAFE_SPARQL_PASSWORD: "${MCP_SAFE_SPARQL_PASSWORD:-}"
+      MCP_SAFE_SPARQL_DB_TIMEOUT: "${MCP_SAFE_SPARQL_DB_TIMEOUT:-5}"
+      MCP_SAFE_SPARQL_APP_TIMEOUT: "${MCP_SAFE_SPARQL_APP_TIMEOUT:-8}"
+      MCP_SAFE_SPARQL_MAX_ROWS: "${MCP_SAFE_SPARQL_MAX_ROWS:-100}"
+      MCP_SAFE_SPARQL_POLICY_JSON: "${MCP_SAFE_SPARQL_POLICY_JSON:-}"
+    volumes: [mcp_logs:/app/logs]
     command: ["python", "-m", "mcp.mcp_server"]
-    ports:
-      - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - rdf_store
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [service_net, rdf_store]
 
 networks:
+  service_net: {}
   rdf_store:
     external: true
     name: ${RDF_DOCKER_NETWORK:-graphdb_default}
 
 volumes:
-  profile_logs:
+  dashboard_logs: {}
+  agent_logs: {}
+  mcp_logs: {}

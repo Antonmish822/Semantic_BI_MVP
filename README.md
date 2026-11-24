@@ -57,29 +57,33 @@ cp .env.example .env
 - для GraphDB задайте `RDF_URL` и `GRAPHDB_REPOSITORY`; для Fuseki задайте `RDF_URL` как URL dataset, например `http://127.0.0.1:3030/Persistent` (сервер добавит `/query`, если его нет в URL);
 - задайте `GRAPH_PREFIX` для RDF-проекции. Пример адреса, repository и префикса показан в [`.env.example`](.env.example); подставьте значения вашего GraphDB стенда;
 - если хранилище требует авторизацию, заполните `RDF_USERNAME` и `RDF_PASSWORD`;
-- для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
+- для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и разрешённые адреса `AUTH_ALLOWED_EMAILS` или домены `AUTH_ALLOWED_DOMAINS`.
 - задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить сохранение и публикацию онтологий; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
+
+Для чата задайте два разных случайных секрета в `.env` — `AGENT_SERVICE_TOKEN` для связи дашборда с агентом и `MCP_AUTH_TOKEN` для аналитического MCP. Для редактора и помощника онтологий добавьте отдельные `ONTOLOGY_ADMIN_TOKEN` и `ONTOLOGY_MCP_TOKEN`. Каждый секрет можно сгенерировать командой `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Сохраните файл с правами владельца (`chmod 600 .env` на Linux). Для публикации графов укажите отдельную пару `ONTOLOGY_RDF_USERNAME` и `ONTOLOGY_RDF_PASSWORD`, основная пара `RDF_*` должна разрешать только чтение.
+
+Оба помощника начинают отправлять данные модели при `LLM_EXTERNAL_DATA_APPROVED=1` и настроенном `POLZA_API_KEY`. До включения проверьте состав данных в [справочнике конфигурации](docs/CONFIGURATION.md#передача-данных-модели). Для демонстрации на своём компьютере можно явно задать `AUTH_ENABLED=0` и открыть дашборд через loopback. Для общего стенда настройте Yandex ID, разрешённые адреса, HTTPS, `AUTH_COOKIE_SECURE=1` и точный `AUTH_ALLOWED_ORIGINS`. Для порта 8085 локальный callback — `http://127.0.0.1:8085/auth/callback`, для Compose по умолчанию — `http://127.0.0.1:8088/auth/callback`.
 
 Установите зависимости и запустите сервисы в отдельных терминалах:
 
 ```bash
 uv sync --locked
-python -m mcp.mcp_server
+uv run --locked python -m mcp.mcp_server
 ```
 
 ```bash
-python agent_service.py
+uv run --locked python agent_service.py
 ```
 
 ```bash
-python server.py
+uv run --locked python server.py
 ```
 
 Откройте адрес из `DASHBOARD_HOST` и `DASHBOARD_PORT` (по примеру `.env.example`: <http://127.0.0.1:8085>).
 
 ## Запуск в Docker Compose
 
-Compose собирает dashboard, agent-service и MCP из одного образа с locked dependencies, подключает их к существующей внешней Docker-сети GraphDB и публикует их порты только на loopback хоста. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, dashboard доступен на порту `8088`. Dashboard проксирует вызовы в agent-service, который обращается к MCP по внутреннему Docker DNS. Для сохранения TTL bind-mounted каталог `ontologies/` должен быть доступен дополнительной группе хоста. Настройка и команды находятся в [руководстве по онтологиям](ontologies/README.md).
+Compose собирает dashboard, agent-service и MCP из одного образа с locked dependencies, публикует порт дашборда на loopback хоста. Dashboard и MCP подключены к внешней сети GraphDB. Агент работает во внутренней сети приложения с исходящим доступом к провайдеру модели. По умолчанию сеть называется `graphdb_default`, адрес GraphDB — `http://graphdb:7200`, dashboard доступен на порту `8088`. Dashboard проксирует вызовы в agent-service, который обращается к MCP по внутреннему Docker DNS. Для сохранения TTL bind-mounted каталог `ontologies/` должен быть доступен дополнительной группе хоста. Настройка и команды находятся в [руководстве по онтологиям](ontologies/README.md).
 
 ```bash
 cp .env.example .env
@@ -87,10 +91,10 @@ chmod g+rwx,g+s ontologies
 CRM_MONITOR_GID="$(id -g)" docker compose up -d --build
 ```
 
-Для конфигурации в `.env.ai-agent` задайте путь через `CRM_MONITOR_ENV_FILE`:
+Для конфигурации в `.env.ai-agent` передайте файл Docker Compose:
 
 ```bash
-CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent \
+CRM_MONITOR_GID="$(id -g)" \
   docker compose --env-file .env.ai-agent up -d --build
 ```
 
@@ -104,7 +108,7 @@ CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent \
 RDF_DOCKER_NETWORK=my_graphdb_network docker compose up -d --build
 ```
 
-Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Для dashboard, MCP и agent-service доступны переменные портов `CRM_PULSE_MONITOR_PORT`, `MCP_SERVER_PORT` и `AGENT_SERVICE_PORT`; внутри сети контейнеры по-прежнему слушают `8088`, `8090`, `8091`. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
+Если GraphDB недоступна по имени `graphdb`, задайте `RDF_URL_DOCKER`, например `RDF_URL_DOCKER=http://my-graphdb:7200`. Порт дашборда задаёт `CRM_PULSE_MONITOR_PORT`. Сервисы MCP и агента доступны контейнерам на портах `8090` и `8091` соответственно. Для Fuseki задайте `RDF_BACKEND=fuseki` и `RDF_URL_DOCKER` с URL dataset, доступным из Docker-сети.
 
 Compose запускает контейнер с read-only корневой файловой системой и временным `/tmp`. Остановить сервис:
 
@@ -114,7 +118,7 @@ docker compose down
 
 ## AI Agent (Polza.ai + MCP)
 
-Минимальный HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/agent/progress` и проксируется дашбордом на выделенный сервис агента. История сообщений хранится в памяти процесса агента по `session_id`.
+Минимальный HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/agent/progress` и проксируется дашбордом на выделенный сервис агента. История сообщений хранится в памяти процесса агента по паре «пользователь, session_id» в течение часа после успешного ответа. Вкладка хранит только ID диалога и при перезагрузке получает историю у агента. Кнопка сброса удаляет историю на сервере.
 
 Режимы маршрутизации:
 
@@ -126,7 +130,6 @@ docker compose down
 - `AGENT_MODE` — режим маршрутизации (`proxy` или `direct`);
 - `AGENT_BASE_URL` — базовый URL сервиса агента (по умолчанию `http://127.0.0.1:8091`);
 - `AGENT_TIMEOUT` — таймаут проксирования к агенту;
-- `AGENT_CORS_ALLOW_ORIGINS` — CORS-оригины для сервиса агента (по умолчанию `*`);
 - `AGENT_ALLOW_SPARQL` — разрешить AI Agent выбирать `sparql_select` (`0/1`; MCP независимо проверяет серверные условия);
 - `POLZA_BASE_URL` — базовый URL API (по умолчанию `https://polza.ai/api/v1`);
 - `POLZA_API_KEY` — ключ доступа к Polza.ai;
@@ -152,10 +155,22 @@ docker compose down
 
 ## Управление онтологиями
 
-Страница `/ontologies` показывает список Turtle-файлов, статистику классов/признаков и связи по `rdfs:domain`/`rdfs:range`. Администратор вводит `ONTOLOGY_ADMIN_TOKEN`; браузер хранит его в `localStorage` до очистки поля. Проверка и сохранение TTL не меняют GraphDB. Публикация — отдельная операция: сервер вычисляет URI графа из slug, отправляет Graph Store Protocol PUT и сверяет опубликованный граф. Публикация поддерживается только для GraphDB. Кнопка «Удалить в карантин» сначала получает снимки SHA-256 файла, ревизионного архива и fingerprint графа, затем требует ввести slug. Перед удалением сервер сохраняет точный Turtle-снимок графа и повторно сверяет его fingerprint. TTL, ревизии и опубликованный граф хранятся в `ontologies/.quarantine` 30 дней по умолчанию. `ONTOLOGY_QUARANTINE_DAYS` задаёт срок от 1 до 3650 дней. Истёкшие записи очищаются фоновым процессом при запуске и далее раз в час. «Восстановить» возвращает все три объекта; если в GraphDB уже появился другой граф с тем же URI, он не перезаписывается и восстановление останавливается.
+Страница `/ontologies` показывает список Turtle-файлов, статистику классов/признаков и связи по `rdfs:domain`/`rdfs:range`. Администратор вводит `ONTOLOGY_ADMIN_TOKEN`; токен остаётся в поле текущей страницы до её перезагрузки. Проверка и сохранение TTL не меняют GraphDB. Публикация — отдельная операция: сервер вычисляет URI графа из slug, отправляет Graph Store Protocol PUT и сверяет опубликованный граф. Публикация поддерживается только для GraphDB. Кнопка «Удалить в карантин» сначала получает снимки SHA-256 файла, ревизионного архива и fingerprint графа, затем требует ввести slug. Перед удалением сервер сохраняет точный Turtle-снимок графа и повторно сверяет его fingerprint. TTL, ревизии и опубликованный граф хранятся в `ontologies/.quarantine` 30 дней по умолчанию. `ONTOLOGY_QUARANTINE_DAYS` задаёт срок от 1 до 3650 дней. Истёкшие записи очищаются фоновым процессом при запуске и далее раз в час. «Восстановить» возвращает все три объекта; если в GraphDB уже появился другой граф с тем же URI, он не перезаписывается и восстановление останавливается.
 
-Помощник онтологий доступен при настроенном `POLZA_API_KEY`. Он предлагает проверяемые изменения; применить их в редакторе, сохранить файл и опубликовать граф администратор должен отдельно. В Polza.ai отправляются запрос, история текущего диалога и содержимое редактора; инструменты не возвращают CRM-литералы, имена, URI экземпляров или персональные данные.
+Помощник онтологий доступен при настроенном `POLZA_API_KEY`, разрешении на внешнюю обработку и доступе к ontology MCP. Он предлагает проверяемые изменения; применить их в редакторе, сохранить файл и опубликовать граф администратор должен отдельно. Контекст модели включает запрос, историю, TTL из редактора и сохранённого файла, опубликованную схему и агрегаты. Автор TTL или пользователь может включить чувствительные сведения в свободный текст.
 
 ## Аутентификация
 
-Yandex ID включается переменной `AUTH_ENABLED=1`. Для использования задайте параметры OAuth в `.env`; callback должен совпадать с URI в настройках приложения Yandex. При необходимости ограничьте доступ через `AUTH_ALLOWED_DOMAINS`.
+Yandex ID включается переменной `AUTH_ENABLED=1`. Для использования задайте параметры OAuth в `.env`; callback должен совпадать с URI в настройках приложения Yandex. Доступ получают пользователи из `AUTH_ALLOWED_EMAILS` или `AUTH_ALLOWED_DOMAINS`. Пустые списки закрывают вход.
+
+## Проверка сборки
+
+Из корня проекта выполните:
+
+```bash
+uv sync --locked
+uv run --locked python -m unittest discover -s tests -v
+node tests/chat_ui.cjs
+```
+
+Сквозные тесты запускают HTTP-дашборд, FastAPI-агента и MCP на loopback. Для них используются синтетический RDF-ответ и тестовая модель. Отдельная проверка JavaScript покрывает Markdown и выгрузки CSV/XLSX.

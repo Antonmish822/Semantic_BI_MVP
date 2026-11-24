@@ -6,20 +6,26 @@ import base64
 import csv
 import json
 import hmac
+import hashlib
 import os
 import re
 import secrets
-import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from security_controls import (SlidingWindowLimiter, configured_service_token, safe_local_path,
+                               browser_origins, valid_origin, body_length)
+from security_controls import load_env
+from profile_log import open_profile_log, profile_event
+from transport import BoundedHTTPServer, open_upstream, read_bounded
 
 from ontology_admin import (MAX_TTL_BYTES, OntologyError, graph_request, rdf_graphs_equivalent, list_ontologies, publication_history, read_revision,
                             ontology_uri, parse_ttl, publish, read_ontology, save_text,
@@ -181,10 +187,23 @@ DEFAULT_RULES: dict[str, object] = {
 }
 CACHE_LOCK = threading.RLock()
 GRAPH_QUERY_EXCEPTIONS = (HTTPError, URLError, TimeoutError, ValueError, KeyError, OSError, json.JSONDecodeError)
-AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
-AGENT_SESSIONS_LOCK = threading.RLock()
 AUTH_SESSIONS: dict[str, dict[str, object]] = {}
 AUTH_SESSIONS_LOCK = threading.RLock()
+
+
+OAUTH_LOCK = threading.Lock()
+OAUTH_STATES: dict[str, tuple[float, str]] = {}
+OAUTH_LOGIN_RATE_LIMIT = SlidingWindowLimiter(20, 60)
+API_LOCAL_RATE = SlidingWindowLimiter(480, 60)
+API_RATE = SlidingWindowLimiter(240, 60)
+ASSISTANT_RATE = SlidingWindowLimiter(10, 60)
+ONTOLOGY_SLOTS = threading.BoundedSemaphore(2)
+
+
+def cache_result(cache, key, entry):
+    if key not in cache and len(cache) >= 128:
+        cache.pop(next(iter(cache)))
+    cache[key] = entry
 
 
 def cache_fallback_enabled() -> bool:
@@ -211,7 +230,7 @@ def admin_token_matches(supplied: str, expected: str) -> bool:
 
 
 def auth_enabled() -> bool:
-    return os.environ.get("AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("AUTH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def auth_cookie_name() -> str:
@@ -236,7 +255,8 @@ def auth_cookie_same_site() -> str:
 
 
 def auth_cookie_secure() -> bool:
-    return os.environ.get("AUTH_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return (auth_yandex_redirect_uri().lower().startswith("https://") or
+            os.environ.get("AUTH_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"})
 
 
 def auth_yandex_client_id() -> str:
@@ -255,16 +275,25 @@ def auth_yandex_scopes() -> str:
     return os.environ.get("YANDEX_SCOPES", "login:email login:info").strip()
 
 
+def _oauth_endpoint(setting: str, default: str) -> str:
+    value = os.environ.get(setting, default).strip()
+    url = urlsplit(value)
+    if (url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None
+            or url.query or url.fragment or any(ch.isspace() for ch in value)):
+        raise ValueError("Для OAuth требуется HTTPS endpoint")
+    return value
+
+
 def auth_yandex_auth_url() -> str:
-    return os.environ.get("YANDEX_AUTH_URL", "https://oauth.yandex.ru/authorize").strip()
+    return _oauth_endpoint("YANDEX_AUTH_URL", "https://oauth.yandex.ru/authorize")
 
 
 def auth_yandex_token_url() -> str:
-    return os.environ.get("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token").strip()
+    return _oauth_endpoint("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token")
 
 
 def auth_yandex_profile_url() -> str:
-    return os.environ.get("YANDEX_PROFILE_URL", "https://login.yandex.ru/info").strip()
+    return _oauth_endpoint("YANDEX_PROFILE_URL", "https://login.yandex.ru/info")
 
 
 def auth_allowed_domains() -> set[str]:
@@ -275,7 +304,7 @@ def auth_allowed_domains() -> set[str]:
 
 
 def auth_logout_redirect() -> str:
-    return os.environ.get("AUTH_LOGOUT_REDIRECT", "/").strip() or "/"
+    return safe_local_path(os.environ.get("AUTH_LOGOUT_REDIRECT", "/"))
 
 
 def auth_debug() -> bool:
@@ -351,7 +380,7 @@ def _get_auth_session(session_id: str | None) -> dict[str, object] | None:
 def _set_auth_session(session_id: str, profile: dict[str, object]) -> None:
     expires_at = time.time() + auth_cookie_max_age()
     with AUTH_SESSIONS_LOCK:
-        if len(AUTH_SESSIONS) > 2048:
+        if len(AUTH_SESSIONS) >= 2048:
             AUTH_SESSIONS.pop(next(iter(AUTH_SESSIONS)))
         AUTH_SESSIONS[session_id] = {"profile": profile, "expires_at": expires_at}
 
@@ -379,7 +408,7 @@ def _is_public_path(path: str) -> bool:
 
 
 def _is_static_asset(path: str) -> bool:
-    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/styles.css"} or path.startswith("/vendor/")
+    return path in {"/app.js", "/leads.js", "/employees.js", "/agent.js", "/ontologies.js", "/workbook.js", "/styles.css"} or path.startswith("/vendor/")
 
 
 def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
@@ -388,33 +417,52 @@ def _auth_next_url(handler: BaseHTTPRequestHandler) -> str:
 
 def _fetch_json(url: str, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, object]:
     request = Request(url, data=data, method=method, headers=headers or {})
-    with urlopen(request, timeout=20) as response:
-        payload = response.read()
+    with open_upstream(request, timeout=20) as response:
+        payload = read_bounded(response, 65536)
         return json.loads(payload.decode("utf-8"))
 
 
 def _post_form(url: str, data: dict[str, str], headers: dict[str, str] | None = None) -> dict[str, object]:
     encoded = urlencode(data).encode("utf-8")
     request = Request(url, data=encoded, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})})
-    with urlopen(request, timeout=20) as response:
-        payload = response.read()
+    with open_upstream(request, timeout=20) as response:
+        payload = read_bounded(response, 65536)
         return json.loads(payload.decode("utf-8"))
 
 
+def _oauth_state_cookie(value: str, max_age: int = 300) -> str:
+    name = _secure_cookie_prefix() + "semantic_bi_oauth_state"
+    cookie = SimpleCookie()
+    cookie[name] = value
+    cookie[name]["path"] = "/"
+    cookie[name]["max-age"] = str(max_age)
+    cookie[name]["httponly"] = True
+    cookie[name]["samesite"] = "Lax"
+    if auth_cookie_secure():
+        cookie[name]["secure"] = True
+    return cookie.output(header="").strip()
+
+
 def _oauth_state_payload(next_path: str) -> str:
-    nonce = secrets.token_urlsafe(16)
-    return base64.urlsafe_b64encode(json.dumps({"nonce": nonce, "next": next_path}).encode("utf-8")).decode("ascii")
+    state = secrets.token_urlsafe(32)
+    with OAUTH_LOCK:
+        for key, (expires, _) in list(OAUTH_STATES.items()):
+            if expires < time.time():
+                OAUTH_STATES.pop(key, None)
+        if len(OAUTH_STATES) >= 1024:
+            raise RuntimeError("Too many pending OAuth sign-ins")
+        OAUTH_STATES[state] = (time.time() + 300, safe_local_path(next_path))
+    return state
 
 
-def _parse_oauth_state(raw: str) -> dict[str, object] | None:
-    try:
-        decoded = base64.urlsafe_b64decode(raw.encode("ascii") + b"==").decode("utf-8")
-        payload = json.loads(decoded)
-        if isinstance(payload, dict) and isinstance(payload.get("nonce"), str):
-            return payload
-    except (ValueError, json.JSONDecodeError):
+def _parse_oauth_state(raw: str, cookie_state: str | None) -> dict[str, object] | None:
+    if not raw or not cookie_state or not secrets.compare_digest(raw.encode(), cookie_state.encode()):
         return None
-    return None
+    with OAUTH_LOCK:
+        stored = OAUTH_STATES.pop(raw, None)  # One-time use, including failed callbacks.
+    if stored is None or stored[0] < time.time():
+        return None
+    return {"next": stored[1]}
 
 
 def _build_auth_url(state: str) -> str:
@@ -461,12 +509,12 @@ def _profile_email(profile: dict[str, object]) -> str:
 
 def _is_allowed_profile(profile: dict[str, object]) -> bool:
     domains = auth_allowed_domains()
-    if not domains:
-        return True
-    email = _profile_email(profile).lower()
+    email = _profile_email(profile).strip().lower()
+    emails = {item.strip().lower() for item in os.environ.get("AUTH_ALLOWED_EMAILS", "").split(",") if item.strip()}
     if not email or "@" not in email:
         return False
-    return email.split("@", 1)[1] in domains
+    # Unconfigured allowlists must never make arbitrary Yandex accounts trusted.
+    return email in emails or email.split("@", 1)[1] in domains
 
 
 def _render_auth_error(message: str) -> bytes:
@@ -477,71 +525,21 @@ def _render_auth_error(message: str) -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
-def load_env() -> None:
-    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", ROOT / ".env"))
-    if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
-            value = value[1:-1]
-        os.environ.setdefault(key, value)
-
-
 def _read_json_body(handler: BaseHTTPRequestHandler, max_bytes: int = 512 * 1024) -> dict[str, object]:
-    length = int(handler.headers.get("Content-Length", "0"))
+    length = body_length(handler.headers, max_bytes)
     if length <= 0 or length > max_bytes:
         raise ValueError("Недопустимый размер запроса")
     raw = handler.rfile.read(length)
     try:
-        return json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Ожидается JSON-объект")
+        return payload
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("Некорректный JSON") from exc
 
 
-PROFILE_LOCK = threading.Lock()
 PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-AGENT_PROGRESS_LOCK = threading.Lock()
-AGENT_PROGRESS: dict[str, dict[str, str]] = {}
-
-
-def set_agent_progress(request_id: str, stage: str, message: str) -> None:
-    with AGENT_PROGRESS_LOCK:
-        if request_id not in AGENT_PROGRESS and len(AGENT_PROGRESS) >= 256:
-            AGENT_PROGRESS.pop(next(iter(AGENT_PROGRESS)))
-        AGENT_PROGRESS[request_id] = {"stage": stage, "message": message}
-
-
-def open_profile_log(component: str):
-    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or ROOT / "logs")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{component}-profile.jsonl"
-    return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))
-
-
-def profile_event(event: str, started: float | None = None, **fields: object) -> bool:
-    record = {
-        "event": event,
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        **fields,
-    }
-    if started is not None:
-        record["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
-    component = "mcp" if event in {"mcp_request", "graphdb_select"} else "agent"
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    try:
-        with PROFILE_LOCK, open_profile_log(component) as log:
-            log.write(line)
-    except OSError as exc:
-        print(f"Could not write {component} profile log ({type(exc).__name__})", file=sys.stderr)
-        return False
-    return True
-
-
 def profile_request_id(value: str) -> str:
     if PROFILE_ID.fullmatch(value):
         return value.lower()
@@ -561,46 +559,6 @@ def agent_mode() -> str:
 
 def agent_base_url() -> str:
     return os.environ.get("AGENT_BASE_URL", "http://127.0.0.1:8091").strip()
-
-
-def _agent_system_prompt(
-    tools: list[dict[str, object]], catalog: list[dict[str, object]],
-) -> str:
-    base_prompt = os.environ.get(
-        "AGENT_SYSTEM_PROMPT",
-        "Ты — аналитический ассистент Semantic BI. "
-        "Отвечай по-русски. Для ответов о данных обязательно используй MCP-инструменты. "
-        "Если нужно уточнение, задай вопрос без вызова инструмента. "
-        "Запрещено сочинять SPARQL, префиксы или обращаться к графу без MCP. "
-        "Если не хватает понимания схемы — используй explain_schema. "
-        "Чтобы вызвать инструмент, ответь ТОЛЬКО JSON без пояснений: "
-        "{\"tool_call\":{\"name\":\"<tool>\",\"arguments\":{...}}}. "
-        "НЕ используй формат <invoke ...> и НЕ добавляй обычный текст.",
-    )
-    tools_hint = "\nДоступные инструменты и схемы аргументов:\n" + json.dumps(
-        tools, ensure_ascii=False, separators=(",", ":"),
-    )
-    named_query_hint = (
-        "\nАгент уже получил актуальный каталог из MCP через list_queries. "
-        "Используй его для выбора шаблона и для ответов о доступных шаблонах. "
-        "Для run_named_query определи, какие данные нужны пользователю, и выбери шаблон "
-        "по описанию и параметрам из этого каталога. Учитывай контекст диалога. "
-        "Копируй точный идентификатор шаблона в arguments.name. "
-        "Внешнее name обозначает инструмент. arguments.parameters можно опустить, "
-        "если шаблону не нужны параметры. Не выдумывай шаблон и не подставляй вместо него "
-        "текст вопроса. Если выбор неоднозначен и данных недостаточно, уточни запрос. "
-        'Формат: {"tool_call":{"name":"run_named_query","arguments":{"name":"<имя из каталога>"}}}.'
-        "\nАктуальный каталог MCP:\n"
-        "\nФинальный ответ пользователю оформляй в Markdown: короткий вывод, заголовки "
-        "для разделов, списки для перечислений и таблицы для сопоставлений. "
-        "Не используй HTML. Вызовы инструментов по-прежнему возвращай только JSON."
-    )
-    return base_prompt + tools_hint + named_query_hint + json.dumps(catalog, ensure_ascii=False)
-
-
-def _extract_tool_call(content: str) -> dict[str, object] | None:
-    calls = _extract_tool_calls(content)
-    return calls[0] if calls else None
 
 
 def sparql_literal(value: str) -> str:
@@ -639,8 +597,8 @@ class RDFStoreClient:
             ).decode("ascii")
             headers["Authorization"] = f"Basic {token}"
         request = Request(self.query_url, data=body, headers=headers, method="POST")
-        with urlopen(request, timeout=self.timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        with open_upstream(request, timeout=self.timeout) as response:
+            result = json.loads(read_bounded(response, 32 * 1024 * 1024).decode("utf-8"))
         return result.get("results", {}).get("bindings", [])
 
     def pulse(self, project: str = "all") -> dict[str, object]:
@@ -1106,6 +1064,17 @@ def create_store_client(environ: dict[str, str] | None = None) -> RDFStoreClient
     )
 
 
+def ontology_writer() -> RDFStoreClient:
+    client = create_store_client()
+    if client.backend != "graphdb":
+        raise OntologyError(501, "Публикация поддерживается только для GraphDB")
+    client.username = os.environ.get("ONTOLOGY_RDF_USERNAME", "")
+    client.password = os.environ.get("ONTOLOGY_RDF_PASSWORD", "")
+    if not (client.username and client.password):
+        raise OntologyError(503, "Не настроена учётная запись публикации онтологий")
+    return client
+
+
 def get_pulse(project: str = "all") -> dict[str, object]:
     now = time.monotonic()
     with CACHE_LOCK:
@@ -1116,7 +1085,7 @@ def get_pulse(project: str = "all") -> dict[str, object]:
             return cached[1]
         try:
             payload = create_store_client().pulse(project)
-            cache[project] = (now, payload)
+            cache_result(cache, project, (now, payload))
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
             if cache_fallback_enabled() and cached is not None:
@@ -1151,7 +1120,7 @@ def get_deal_activity_distribution(project: str = "all") -> dict[str, object]:
             return cached[1]
         try:
             payload = create_store_client().deal_activity_distribution(project)
-            cache[project] = (now, payload)
+            cache_result(cache, project, (now, payload))
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
             if cache_fallback_enabled() and cached is not None:
@@ -1167,7 +1136,7 @@ def get_red_deals(project: str = "all") -> list[dict[str, str | None]]:
             return cached_project[1]
         try:
             rows = create_store_client().red_deals(project)
-            cache[project] = (now, rows)
+            cache_result(cache, project, (now, rows))
             CACHE["red_deals"] = cache
             return rows
         except GRAPH_QUERY_EXCEPTIONS:
@@ -1186,7 +1155,7 @@ def get_recent_activities(project: str = "all") -> list[dict[str, str | None]]:
             return cached_project[1]
         try:
             rows = create_store_client().recent_activities(project)
-            cache[project] = (now, rows)
+            cache_result(cache, project, (now, rows))
             CACHE["recent_activities"] = cache
             return rows
         except GRAPH_QUERY_EXCEPTIONS:
@@ -1206,7 +1175,7 @@ def get_employee_recent_activities(project: str = "all", employee: str = "all") 
             return cached_key[1]
         try:
             payload = create_store_client().employee_recent_activities(project, employee)
-            cache[key] = (now, payload)
+            cache_result(cache, key, (now, payload))
             CACHE["employee_recent_activities"] = cache
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
@@ -1225,7 +1194,7 @@ def get_lead_conversion_trend(category: str = "all") -> dict[str, object]:
             return cached[1]
         try:
             payload = create_store_client().lead_conversion_trend(category)
-            cache[category] = (now, payload)
+            cache_result(cache, category, (now, payload))
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
             if cache_fallback_enabled() and cached is not None:
@@ -1260,7 +1229,7 @@ def get_lead_employee_pulse(employee: str = "all") -> dict[str, object]:
             return cached[1]
         try:
             payload = create_store_client().lead_employee_pulse(employee)
-            cache[employee] = (now, payload)
+            cache_result(cache, employee, (now, payload))
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
             if cache_fallback_enabled() and cached is not None:
@@ -1587,7 +1556,7 @@ def get_view_state(page: str, project: str = "all", category: str = "all", emplo
             return cached[1]
         try:
             payload = build_view_state(page=page, project=project, category=category, employee=employee)
-            view_cache[cache_key] = (now, payload)
+            cache_result(view_cache, cache_key, (now, payload))
             CACHE["view_state"] = view_cache
             return payload
         except GRAPH_QUERY_EXCEPTIONS:
@@ -1601,6 +1570,61 @@ def get_view_state(page: str, project: str = "all", category: str = "all", emplo
 class Handler(BaseHTTPRequestHandler):
     server_version = "SemanticBICRMPulse/1.0"
 
+    def _local_cookie(self) -> str:
+        # The random cookie isolates browser sessions even on a single-user demo.
+        cookie = _get_session_id(self.headers)
+        if cookie and _get_auth_session(cookie):
+            return cookie
+        if not getattr(self, "_new_local_cookie", None):
+            self._new_local_cookie = secrets.token_urlsafe(32)
+            _set_auth_session(self._new_local_cookie, {"id": "local"})
+        return self._new_local_cookie
+
+    def _actor(self) -> str:
+        # The session cookie is validated before reaching this method. No PII goes downstream.
+        if not auth_enabled():
+            return hashlib.sha256(self._local_cookie().encode()).hexdigest()
+        session = _require_auth(self.headers)
+        if not session:
+            return ""
+        profile = session["profile"]
+        identity = profile.get("id") or _profile_email(profile)
+        return hashlib.sha256(str(identity).encode()).hexdigest() if identity else ""
+
+    def _request_allowed(self, path: str) -> bool:
+        hosts = {urlsplit(origin).netloc.lower() for origin in browser_origins()}
+        if len(self.headers.get_all("Host") or []) != 1 or self.headers.get("Host", "").lower() not in hosts:
+            self._send_json(403, {"error": "Недопустимый Host"})
+            return False
+        if not auth_enabled():
+            if urlsplit("//" + self.headers["Host"]).hostname not in {"localhost", "127.0.0.1", "::1"}:
+                self._send_json(403, {"error": "Локальный режим требует loopback-адрес дашборда"})
+                return False
+            if not API_LOCAL_RATE.allow(self.client_address[0]):
+                self._send_json(429, {"error": "Слишком много запросов"})
+                return False
+            self._local_cookie()
+        if path.startswith("/api/") and self._handle_auth_gate(path):
+            return False
+        if self.command in {"POST", "PUT", "DELETE"}:
+            if not valid_origin(self.headers, required=True):
+                self._send_json(403, {"error": "Недопустимый Origin"})
+                return False
+            if path.startswith("/api/"):
+                if self.headers.get_content_type() != "application/json":
+                    self._send_json(415, {"error": "Требуется application/json"})
+                    return False
+                limit = MAX_ASSISTANT_BODY if path == "/api/ontology-assistant/suggest" else MAX_TTL_BYTES + 4096
+                try:
+                    body_length(self.headers, limit)
+                except ValueError:
+                    self._send_json(413, {"error": "Недопустимый размер запроса"})
+                    return False
+        if path.startswith("/api/") and not API_RATE.allow(self._actor()):
+            self._send_json(429, {"error": "Слишком много запросов"})
+            return False
+        return True
+
     def _is_authenticated(self) -> bool:
         return _require_auth(self.headers) is not None
 
@@ -1611,6 +1635,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", cookie)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
         self.end_headers()
 
     def _auth_required(self, path: str) -> bool:
@@ -1630,25 +1657,49 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if self._is_authenticated():
             return False
-        self._send_redirect(_build_login_redirect(path))
+        if path.startswith("/api/"):
+            self._send_json(401, {"error": "Требуется вход в систему"})
+        else:
+            self._send_redirect(_build_login_redirect(path))
         return True
 
     def _handle_auth_routes(self, path: str) -> bool:
+        if path != "/auth/logout" and self.command != "GET":
+            return False
         if path == "/auth/status":
             session = _require_auth(self.headers)
             if not session:
                 self._send_json(401, {"authenticated": False})
             else:
                 profile = session.get("profile", {}) if isinstance(session, dict) else {}
-                self._send_json(200, {"authenticated": True, "profile": profile})
+                self._send_json(200, {"authenticated": True, "profile": {
+                    "id": profile.get("id", ""),
+                    "email": _profile_email(profile),
+                }})
             return True
         if path == "/auth/login":
+            if not OAUTH_LOGIN_RATE_LIMIT.allow(self.client_address[0]):
+                self._send_json(429, {"error": "Too many login attempts"})
+                return True
             if not auth_enabled():
                 self._send_json(404, {"error": "Auth disabled"})
                 return True
+            if not all((auth_yandex_client_id(), auth_yandex_client_secret(), auth_yandex_redirect_uri())):
+                self._send_json(503, {"error": "Вход через Yandex ID не настроен"})
+                return True
             next_path = parse_qs(urlsplit(self.path).query).get("next", ["/"])[0]
-            state = _oauth_state_payload(next_path)
-            self._send_redirect(_build_auth_url(state))
+            try:
+                auth_yandex_auth_url()
+                auth_yandex_token_url()
+                auth_yandex_profile_url()
+                state = _oauth_state_payload(safe_local_path(next_path))
+            except ValueError:
+                self._send_json(503, {"error": "Некорректная конфигурация OAuth"})
+                return True
+            except RuntimeError:
+                self._send_json(429, {"error": "Слишком много попыток входа"})
+                return True
+            self._send_redirect(_build_auth_url(state), cookie=_oauth_state_cookie(state))
             return True
         if path == "/auth/callback":
             if not auth_enabled():
@@ -1657,7 +1708,7 @@ class Handler(BaseHTTPRequestHandler):
             params = parse_qs(urlsplit(self.path).query)
             code = params.get("code", [""])[0]
             state_raw = params.get("state", [""])[0]
-            payload = _parse_oauth_state(state_raw)
+            payload = _parse_oauth_state(state_raw, _read_cookies(self.headers).get(_secure_cookie_prefix() + "semantic_bi_oauth_state"))
             if not code or not payload:
                 self._send(400, _render_auth_error("Некорректный ответ OAuth"), "application/json; charset=utf-8")
                 return True
@@ -1675,17 +1726,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, _render_auth_error("Доступ запрещён"), "application/json; charset=utf-8")
                 return True
             session_id = secrets.token_urlsafe(24)
-            _set_auth_session(session_id, profile)
-            next_path = str(payload.get("next", "/")) if isinstance(payload, dict) else "/"
+            _set_auth_session(session_id, {"id": profile.get("id"), "email": _profile_email(profile)})
+            next_path = safe_local_path(payload.get("next", "/"))
             self._send_redirect(next_path, cookie=_session_cookie(session_id))
             return True
         if path == "/auth/logout":
+            if self.command != "POST":
+                self._send_json(405, {"error": "Для выхода требуется POST"})
+                return True
+            session_id = _get_session_id(self.headers)
+            with AUTH_SESSIONS_LOCK:
+                AUTH_SESSIONS.pop(session_id, None)
             self._send_redirect(auth_logout_redirect(), cookie=_clear_session_cookie())
             return True
         return False
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if not self._request_allowed(path):
+            return
         if self._handle_auth_routes(path):
             return
         if self._handle_auth_gate(path):
@@ -1710,6 +1769,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(STATIC / "agent.js", "text/javascript; charset=utf-8")
         elif path == "/ontologies.js":
             self._send_file(STATIC / "ontologies.js", "text/javascript; charset=utf-8")
+        elif path == "/workbook.js":
+            self._send_file(STATIC / "workbook.js", "text/javascript; charset=utf-8")
         elif path == "/styles.css":
             self._send_file(STATIC / "styles.css", "text/css; charset=utf-8")
         elif path == "/api/ontology-assistant/config":
@@ -1734,7 +1795,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ontologies":
             list_quarantine(ROOT / "ontologies")
             self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
-                                  "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
+                                  "admin_enabled": bool(configured_service_token("ONTOLOGY_ADMIN_TOKEN"))})
         elif path == "/api/ontologies/quarantine":
             self._send_json(200, {"items": list_quarantine(ROOT / "ontologies")})
         elif path.startswith("/api/ontologies/") and path.count("/") == 3 and path != "/api/ontologies/validate":
@@ -1765,7 +1826,7 @@ class Handler(BaseHTTPRequestHandler):
             file_path = (STATIC / path.lstrip("/"))
             try:
                 resolved = file_path.resolve()
-                if not str(resolved).startswith(str(STATIC.resolve())):
+                if not resolved.is_relative_to((STATIC / "vendor").resolve()):
                     raise FileNotFoundError
                 if not resolved.is_file():
                     raise FileNotFoundError
@@ -1937,63 +1998,41 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "Не удалось получить адаптивное состояние вида",
                 })
                 self.log_error("CRM view-state query failed (%s)", type(exc).__name__)
-        elif path == "/api/agent/progress":
+        elif path in {"/api/agent/progress", "/api/agent/session"}:
             if agent_mode() != "proxy":
                 self._send_json(404, {"error": "Agent proxy disabled"})
                 return
-            self._proxy_agent_request("GET", self.path)
+            field = "session_id" if path.endswith("/session") else "request_id"
+            identifier = parse_qs(urlsplit(self.path).query).get(field, [""])[0]
+            if not PROFILE_ID.fullmatch(identifier):
+                self._send_json(400, {"error": "Некорректный идентификатор"})
+                return
+            self._proxy_agent_request("GET", path + "?" + urlencode({field: identifier}))
         else:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
-    def _record_browser_profile(self) -> None:
-        try:
-            if self.headers.get_content_type() != "application/json":
-                raise ValueError
-            payload = _read_json_body(self, max_bytes=1024)
-            if not isinstance(payload, dict):
-                raise ValueError
-            request_id = payload.get("request_id")
-            duration = payload.get("duration_ms")
-            status = payload.get("http_status")
-            outcome = payload.get("outcome")
-            error_class = payload.get("error_class")
-            if not isinstance(request_id, str) or not PROFILE_ID.fullmatch(request_id):
-                raise ValueError
-            if type(duration) not in (int, float) or not 0 <= duration <= 86_400_000:
-                raise ValueError
-            if status is not None and (type(status) is not int or not 100 <= status <= 599):
-                raise ValueError
-            if outcome == "ok":
-                if error_class is not None or status is None or not 200 <= status <= 299:
-                    raise ValueError
-            elif outcome != "error" or error_class not in ("network", "http", "json", "render"):
-                raise ValueError
-        except (ValueError, UnicodeError):
-            self._send(400, b"", "text/plain")
-            return
-
-        saved = profile_event(
-            "agent_browser", request_id=request_id.lower(), duration_ms=round(duration, 2),
-            http_status=status, outcome=outcome, error_class=error_class,
-        )
-        self._send(204 if saved else 503, b"", "text/plain")
-
     def _read_raw_body(self, max_bytes: int = 512 * 1024) -> bytes | None:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > max_bytes:
+        try:
+            length = body_length(self.headers, max_bytes)
+        except ValueError:
             return None
         return self.rfile.read(length)
 
     def _proxy_agent_request(self, method: str, path: str, body: bytes | None = None) -> None:
         base_url = agent_base_url().rstrip("/")
         url = f"{base_url}{path}"
-        headers: dict[str, str] = {}
+        token = configured_service_token("AGENT_SERVICE_TOKEN")
+        actor = self._actor()
+        if not token or not actor:
+            self._send_json(503, {"error": "Прокси агента не настроен"})
+            return
+        headers = {"X-Service-Token": token, "X-Actor-ID": actor}
         content_type = self.headers.get("Content-Type")
         if content_type:
             headers["Content-Type"] = content_type
         request_id = self.headers.get("X-Request-ID")
         if request_id:
-            headers["X-Request-ID"] = request_id
+            headers["X-Request-ID"] = profile_request_id(request_id)
         timeout = float(os.environ.get("AGENT_TIMEOUT", "60"))
         if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
             self.log_message(
@@ -2005,8 +2044,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         try:
             request = Request(url, data=body, headers=headers, method=method)
-            with urlopen(request, timeout=timeout) as response:
-                payload = response.read()
+            with open_upstream(request, timeout=timeout) as response:
+                payload = read_bounded(response, 4 * 1024 * 1024)
                 if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
                     self.log_message(
                         "Agent proxy response: status=%s content_length=%s",
@@ -2016,11 +2055,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(
                     response.status,
                     payload,
-                    response.headers.get("Content-Type", "application/json; charset=utf-8"),
+                    "application/json; charset=utf-8",
                     request_id=response.headers.get("X-Request-ID"),
                 )
         except HTTPError as exc:
-            payload = exc.read()
+            with exc:
+                if exc.code not in {400, 401, 403, 404, 408, 409, 413, 415, 422, 429, 500, 502, 503, 504}:
+                    self._send_json(502, {"error": "Некорректный ответ агента"})
+                    return
+                try:
+                    decoded = json.loads(read_bounded(exc, 16384))
+                    error = decoded["error"]
+                    if not isinstance(error, str) or len(error) > 512:
+                        raise ValueError
+                    payload = json.dumps({"error": error}, ensure_ascii=False).encode()
+                except (KeyError, TypeError, ValueError):
+                    self._send_json(502, {"error": "Некорректный ответ агента"})
+                    return
             if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
                 self.log_message(
                     "Agent proxy error: status=%s content_length=%s",
@@ -2030,7 +2081,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(
                 exc.code,
                 payload,
-                exc.headers.get("Content-Type", "application/json; charset=utf-8"),
+                "application/json; charset=utf-8",
                 request_id=exc.headers.get("X-Request-ID"),
             )
         except Exception as exc:
@@ -2043,6 +2094,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if not self._request_allowed(path):
+            return
         if self._handle_auth_routes(path):
             return
         if self._handle_auth_gate(path):
@@ -2051,7 +2104,13 @@ class Handler(BaseHTTPRequestHandler):
             self._ontology_class_statistics()
             return
         if path == "/api/ontology-assistant/suggest":
-            self._ontology_assistant_suggest()
+            if not ASSISTANT_RATE.allow(self._actor()) or not ONTOLOGY_SLOTS.acquire(blocking=False):
+                self._send_json(429, {"error": "Помощник занят, повторите запрос позже"})
+                return
+            try:
+                self._ontology_assistant_suggest()
+            finally:
+                ONTOLOGY_SLOTS.release()
             return
         if path == "/api/ontologies" or path.startswith("/api/ontologies/"):
             self._ontology_write("POST")
@@ -2060,19 +2119,14 @@ class Handler(BaseHTTPRequestHandler):
             if agent_mode() != "proxy":
                 self._send_json(404, {"error": "Agent proxy disabled"})
                 return
-            max_bytes = 4096 if path == "/api/agent/profile" else 512 * 1024
+            max_bytes = 4096 if path == "/api/agent/profile" else 64 * 1024
             raw = self._read_raw_body(max_bytes=max_bytes)
             if raw is None:
                 self._send(400, b"", "text/plain")
                 return
-            self._proxy_agent_request("POST", self.path, raw)
+            self._proxy_agent_request("POST", path, raw)
             return
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
-
-    def _send_agent_json(self, status: int, payload: object, request_id: str) -> int:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._send(status, body, "application/json; charset=utf-8", request_id=request_id)
-        return len(body)
 
     def _ontology_class_statistics(self) -> None:
         try:
@@ -2089,16 +2143,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(502, {"error": "Не удалось получить статистику из RDF-хранилища", "status": "unavailable"})
 
     def _ontology_assistant_suggest(self) -> None:
-        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        token = configured_service_token("ONTOLOGY_ADMIN_TOKEN")
         if not token:
             self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
             return
         if not admin_token_matches(self.headers.get("Authorization", ""), token):
             self._send_json(401, {"error": "Требуется токен администратора"})
             return
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host", "")
-        if not origin or urlsplit(origin).netloc != host:
+        if not valid_origin(self.headers, required=True):
             self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
             return
         try:
@@ -2117,7 +2169,7 @@ class Handler(BaseHTTPRequestHandler):
             self.log_error("Ontology assistant failed (%s)", exc.code)
         except OntologyError as exc:
             self._send_json(exc.status, {"error": str(exc), **exc.details})
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
         except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
             self._send_json(502, {"error": "Не удалось получить контекст RDF для помощника", "code": type(exc).__name__})
@@ -2128,16 +2180,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _ontology_write(self, method: str) -> None:
         path = urlsplit(self.path).path
-        token = os.environ.get("ONTOLOGY_ADMIN_TOKEN", "")
+        token = configured_service_token("ONTOLOGY_ADMIN_TOKEN")
         if not token:
             self._send_json(503, {"error": "Администрирование отключено: задайте ONTOLOGY_ADMIN_TOKEN"})
             return
         if not admin_token_matches(self.headers.get("Authorization", ""), token):
             self._send_json(401, {"error": "Требуется токен администратора"})
             return
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host", "")
-        if not origin or urlsplit(origin).netloc != host:
+        if not valid_origin(self.headers, required=True):
             self._send_json(403, {"error": "Origin не соответствует адресу сервера"})
             return
         try:
@@ -2167,10 +2217,15 @@ class Handler(BaseHTTPRequestHandler):
                 expected={key:payload.get(key) for key in ("file_sha256","graph_present","graph_fingerprint","revision_fingerprint")}
                 if not expected["file_sha256"] or not isinstance(expected["graph_present"],bool):
                     raise OntologyError(400,"Передайте снимок предпросмотра удаления")
-                self._send_json(200,delete_ontology(ROOT / "ontologies",parts[2],create_store_client(),expected))
+                store = ontology_writer() if expected["graph_present"] else create_store_client()
+                self._send_json(200, delete_ontology(ROOT / "ontologies", parts[2], store, expected))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "restore" and method == "POST":
-                self._send_json(200,restore_quarantined(ROOT / "ontologies",str(payload.get("operation_id", "")),create_store_client()))
+                restored = restore_quarantined(
+                    ROOT / "ontologies", str(payload.get("operation_id", "")), create_store_client(),
+                    expected_slug=parts[2], writer_factory=ontology_writer,
+                )
+                self._send_json(200, restored)
                 return
             if len(parts) == 3 and parts[:2] == ["api", "ontologies"] and method == "PUT":
                 slug = parts[2]
@@ -2180,7 +2235,7 @@ class Handler(BaseHTTPRequestHandler):
                                       "published": False})
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "publish" and method == "POST":
-                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client(), payload.get("expected_sha256")))
+                self._send_json(200, publish(ROOT / "ontologies", parts[2], ontology_writer(), payload.get("expected_sha256")))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "rollback" and method == "POST":
                 history = [row for row in publication_history(ROOT / "ontologies", parts[2]) if row.get("status") == "confirmed"]
@@ -2189,14 +2244,14 @@ class Handler(BaseHTTPRequestHandler):
                 if previous is None:
                     raise OntologyError(409, "Нет предыдущей подтверждённой ревизии для отката")
                 previous_sha = str(previous.get("sha256"))
-                result = publish(ROOT / "ontologies", parts[2], create_store_client(), previous_sha)
+                result = publish(ROOT / "ontologies", parts[2], ontology_writer(), previous_sha)
                 result["text"] = read_revision(ROOT / "ontologies", parts[2], previous_sha)
                 self._send_json(200, result)
                 return
             self._send_json(404, {"error": "Неизвестная операция управления онтологиями"})
         except OntologyError as exc:
             self._send_json(exc.status, {"error": str(exc), **exc.details})
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
             self._send_json(400, {"error": "Некорректный JSON или UTF-8"})
         except PermissionError:
             self._send_json(503, {"error": "Каталог ontologies недоступен для записи"})
@@ -2206,6 +2261,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if not self._request_allowed(path):
+            return
         if self._handle_auth_routes(path):
             return
         if self._handle_auth_gate(path):
@@ -2216,7 +2273,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
 
     def do_DELETE(self) -> None:  # noqa: N802
-        self._send(405, b"Read-only dashboard", "text/plain; charset=utf-8")
+        path = urlsplit(self.path).path
+        if not self._request_allowed(path):
+            return
+        if path != "/api/agent/session" or agent_mode() != "proxy":
+            self._send_json(405, {"error": "Операция не поддерживается"})
+            return
+        raw = self._read_raw_body(2048)
+        if raw is None:
+            self._send_json(413, {"error": "Недопустимый размер запроса"})
+            return
+        self._proxy_agent_request("DELETE", path, raw)
 
     def _send_file(self, path: Path, content_type: str) -> None:
         self._send(200, path.read_bytes(), content_type)
@@ -2227,10 +2294,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, body: bytes, content_type: str, *, request_id: str | None = None, cookie: str | None = None) -> None:
         self.send_response(status)
+        if not auth_enabled() and getattr(self, "_new_local_cookie", None) and not cookie:
+            cookie = _session_cookie(self._new_local_cookie)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
         if request_id:
             self.send_header("X-Request-ID", request_id)
         if cookie:
@@ -2239,15 +2311,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt: str, *args: object) -> None:
-        print(f"{self.log_date_time_string()} {self.address_string()} {fmt % args}")
-
-    def handle_error(self) -> None:
-        error_type, _, _ = sys.exc_info()
-        if error_type and issubclass(
-            error_type, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError),
-        ):
-            return
-        super().handle_error()
+        # OAuth codes, filter values, identities and upstream errors stay out of access logs.
+        if fmt == '"%s" %s %s':
+            print(f"{self.log_date_time_string()} dashboard_http {self.command} {args[1]}")
 
 
 def main() -> None:
@@ -2256,7 +2322,7 @@ def main() -> None:
         print(f"Agent profile log: {log.name}")
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8082"))
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = BoundedHTTPServer((host, port), Handler)
     store = create_store_client()
     quarantine_stop=threading.Event()
     def expire_quarantine() -> None:

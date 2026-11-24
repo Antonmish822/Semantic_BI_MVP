@@ -1,11 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const state = { slug: null, sha: null, savedText: '', dirty: false, assistantHistory: [], assistantResult: null, assistantReady: false, assistantSlug: null };
-  const tokenStorageKey = 'crm-pulse-ontology-admin-token';
-  try { $('admin-token').value=localStorage.getItem(tokenStorageKey)||''; } catch (_) {}
-  $('admin-token').addEventListener('input',()=>{
-    try { if(token())localStorage.setItem(tokenStorageKey,token());else localStorage.removeItem(tokenStorageKey); } catch (_) {}
-  });
+  try { localStorage.removeItem('crm-pulse-ontology-admin-token'); } catch (_) {}
   const token = () => $('admin-token').value;
   const currentSlug = () => $('new-slug').value.trim();
   const currentFileSha = () => currentSlug() === state.slug ? state.sha : null;
@@ -15,9 +11,9 @@
     const encoded=btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
     return {Authorization:`Bearer-UTF8 ${encoded}`};
   };
-  const headers = () => ({'Content-Type':'application/json', ...authorizationHeader()});
+  const headers = method => ({'Content-Type':'application/json', ...(method && method !== 'GET' ? authorizationHeader() : {})});
   async function api(url, options={}) {
-    const response = await fetch(url, {...options, headers:{...headers(), ...(options.headers||{})}});
+    const response = await fetch(url, {...options, redirect: 'error', headers:{...headers(options.method), ...(options.headers||{})}});
     const data = await response.json().catch(() => ({}));
     if (!response.ok) { const error = new Error(data.error || `HTTP ${response.status}`); error.status=response.status;error.code=data.code;throw error; }
     return data;

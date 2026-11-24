@@ -8,36 +8,8 @@ const chatReset = byId('chat-reset');
 const agentStatus = byId('agent-status');
 const agentProgress = byId('agent-progress');
 const agentProgressStage = byId('agent-progress-stage');
-let sessionId = sessionStorage.getItem('agentSessionId');
-let history = readStoredMessages('agentHistory');
-let transcript = readStoredMessages('agentTranscript');
-
-function readStoredMessages(key) {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(key) || '[]');
-    if (!Array.isArray(value)) return [];
-    return value.filter((item) => item &&
-      (item.role === 'user' || item.role === 'assistant') &&
-      typeof item.content === 'string');
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredMessages() {
-  try {
-    sessionStorage.setItem('agentHistory', JSON.stringify(history));
-    sessionStorage.setItem('agentTranscript', JSON.stringify(transcript));
-  } catch {
-    // Keep the current chat usable if the browser storage quota is reached.
-  }
-}
-
-function restoreChat() {
-  for (const item of transcript) renderMessage(item.role, item.content);
-  if (transcript.length) setStatus('online', 'Агент онлайн');
-}
-
+// Avoid persisting CRM-derived messages in web storage across account changes.
+let sessionId = null;
 function setStatus(state, message) {
   agentStatus.className = `connection ${state}`;
   agentStatus.lastElementChild.textContent = message;
@@ -104,7 +76,11 @@ function markdownCells(line) {
 }
 
 function sanitizeCsvValue(value) {
-  const text = String(value ?? '').replace(/\r\n?/g, '\n');
+  let text = String(value ?? '').replace(/\r\n?/g, '\n');
+  // Keep signed numeric metrics numeric; mark other formula-like input as text.
+  if (/^[\s\uFEFF]*[=+@\-＝＋＠－]/u.test(text) && !/^[+-]?\d+(?:[.,]\d+)?$/.test(text)) {
+    text = "'" + text;
+  }
   if (/["\n,;]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
@@ -122,6 +98,10 @@ function tableToCsv(table) {
 function downloadTableAsCsv(table, filename) {
   const csv = tableToCsv(table);
   const blob = new Blob(["\ufeff", csv], { type: 'text/csv;charset=utf-8;' });
+  downloadBlob(blob, filename);
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -132,24 +112,13 @@ function downloadTableAsCsv(table, filename) {
   URL.revokeObjectURL(url);
 }
 
-function ensureSheetJs() {
-  if (window.XLSX) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = '/vendor/xlsx.full.min.js';
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Не удалось загрузить SheetJS'));
-    document.head.append(script);
-  });
-}
-
 async function downloadTableAsXlsx(table, filename) {
-  await ensureSheetJs();
-  const workbook = window.XLSX.utils.table_to_book(table, { sheet: 'Данные' });
-  window.XLSX.writeFile(workbook, filename);
+  const rows = Array.from(table.querySelectorAll('tr'), row =>
+    Array.from(row.querySelectorAll('th, td'), cell => cell.textContent || ''));
+  const bytes = await createWorkbook(rows);
+  downloadBlob(new Blob([bytes], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }), filename);
 }
 
 function isTableDivider(line) {
@@ -266,20 +235,22 @@ function renderMarkdown(parent, markdown) {
       continue;
     }
 
-    if (/^\s*&gt;\s?/.test(line) || /^\s*>\s?/.test(line)) {
+    const quotePrefix = /^\s*(?:>|&gt;)\s?/;
+    if (quotePrefix.test(line)) {
       const quote = document.createElement('blockquote');
-      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+      while (index < lines.length && quotePrefix.test(lines[index])) {
         const paragraph = document.createElement('p');
-        appendInlineMarkdown(paragraph, lines[index++].replace(/^\s*>\s?/, ''));
+        appendInlineMarkdown(paragraph, lines[index++].replace(quotePrefix, ''));
         quote.append(paragraph);
       }
       parent.append(quote);
       continue;
     }
 
-    const paragraph = [];
+    const paragraph = [lines[index++].trim()];
     while (index < lines.length && lines[index].trim() &&
       !/^\s{0,3}#{1,4}\s/.test(lines[index]) &&
+      !quotePrefix.test(lines[index]) &&
       !/^\s*```/.test(lines[index]) &&
       !/^\s*(?:[-+*]\s+|\d+[.)]\s+)/.test(lines[index]) &&
       !(index + 1 < lines.length && lines[index].includes('|') && isTableDivider(lines[index + 1]))) {
@@ -328,23 +299,39 @@ function clearError() {
 function updateSession(session) {
   if (!sessionId || sessionId !== session) {
     sessionId = session;
-    sessionStorage.setItem('agentSessionId', sessionId);
+    try { sessionStorage.setItem('agentSessionId', sessionId); } catch (_) {}
   }
 }
 
-function resetChat() {
-  history = [];
-  transcript = [];
-  sessionId = null;
-  sessionStorage.removeItem('agentSessionId');
-  sessionStorage.removeItem('agentHistory');
-  sessionStorage.removeItem('agentTranscript');
-  chatLog.replaceChildren();
-  clearError();
-  setStatus('pending', 'Ожидание…');
+async function resetChat() {
+  if (chatSend.disabled) return;
+  chatSend.disabled = true;
+  chatReset.disabled = true;
+  try {
+    if (sessionId) {
+      const response = await fetch('/api/agent/session', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!response.ok) throw new Error('Не удалось удалить историю. Попробуйте ещё раз.');
+    }
+    sessionId = null;
+    try { sessionStorage.removeItem('agentSessionId'); } catch (_) {}
+    chatLog.replaceChildren();
+    clearError();
+    setStatus('pending', 'Ожидание…');
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    chatReset.disabled = false;
+    chatSend.disabled = false;
+  }
 }
 
 async function sendMessage(text) {
+  if (chatSend.disabled) return;
+  chatReset.disabled = true;
   let requestId = globalThis.crypto?.randomUUID?.();
   const startedAt = performance.now();
   let httpStatus = null;
@@ -367,8 +354,6 @@ async function sendMessage(text) {
     }).catch(() => {});
   };
   renderMessage('user', text);
-  transcript.push({ role: 'user', content: text });
-  saveStoredMessages();
   agentProgress.hidden = false;
   agentProgressStage.textContent = 'Подготавливаю запрос';
   setStatus('pending', 'Думаю…');
@@ -393,9 +378,9 @@ async function sendMessage(text) {
   })();
 
   try {
-    const payload = { message: text, session_id: sessionId, history };
+    const payload = { message: text, session_id: sessionId };
     if (window.__AGENT_DEBUG__) {
-      console.info('[agent] request', payload);
+      console.info('[agent] request started');
     }
     const response = await fetch('/api/agent', {
       method: 'POST',
@@ -407,7 +392,7 @@ async function sendMessage(text) {
     phase = response.ok ? 'json' : 'http';
     const data = await response.json();
     if (window.__AGENT_DEBUG__) {
-      console.info('[agent] response', response.status, data);
+      console.info('[agent] response status', response.status);
     }
     if (!response.ok) {
       throw new Error(data.error || 'Не удалось получить ответ агента');
@@ -417,9 +402,6 @@ async function sendMessage(text) {
     renderToolState(data);
     const reply = data.reply || 'Нет ответа от агента.';
     renderMessage('assistant', reply, { durationMs: performance.now() - startedAt });
-    transcript.push({ role: 'assistant', content: reply });
-    history = Array.isArray(data.history) ? data.history : history;
-    saveStoredMessages();
     if (data.session_id) updateSession(data.session_id);
     setStatus('online', 'Агент онлайн');
     requestId = data.request_id || requestId;
@@ -431,6 +413,7 @@ async function sendMessage(text) {
     polling = false;
     await progressPoll;
     agentProgress.hidden = true;
+    chatReset.disabled = false;
     chatSend.disabled = false;
   }
 }
@@ -456,4 +439,27 @@ chatReset.addEventListener('click', () => {
 });
 
 setStatus('pending', 'Ожидание…');
-restoreChat();
+
+async function restoreChat() {
+  try {
+    sessionStorage.removeItem('agentTranscript');
+    sessionStorage.removeItem('agentHistory');
+    const id = sessionStorage.getItem('agentSessionId');
+    if (!id) return;
+    chatSend.disabled = chatReset.disabled = true;
+    const response = await fetch('/api/agent/session?session_id=' + encodeURIComponent(id), {cache:'no-store'});
+    if (response.status === 404) {
+      sessionStorage.removeItem('agentSessionId');
+      return;
+    }
+    if (!response.ok) throw new Error('Не удалось загрузить историю чата');
+    const data = await response.json();
+    for (const item of data.history) renderMessage(item.role, item.content);
+    updateSession(id);
+  } catch (error) {
+    if (error instanceof Error) setError(error.message);
+  } finally {
+    chatSend.disabled = chatReset.disabled = false;
+  }
+}
+if (typeof sessionStorage !== 'undefined') restoreChat();

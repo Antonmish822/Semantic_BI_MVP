@@ -1,10 +1,10 @@
 {
-	"mcpServers": {
-		"modern-remote-server": {
-			"type": "streamable-http",
-			"url": " http://localhost:8090/mcp⁠",
-			"disabled": false,
-			"alwaysAllow": []
-		}
-	}
+  "mcpServers": {
+    "semantic-bi-internal": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8090/mcp",
+      "disabled": true,
+      "alwaysAllow": []
+    }
+  }
 }

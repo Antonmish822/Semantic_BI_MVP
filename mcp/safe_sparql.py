@@ -223,11 +223,11 @@ class ProjectionPolicy:
     entailment: str = "none"
 
 
-def policy_from_env() -> ProjectionPolicy | None:
+def policy_from_env(*, consumer: bool = False) -> ProjectionPolicy | None:
     """Return None unless a complete, explicitly provisioned policy is present."""
     if os.environ.get("MCP_ENABLE_SAFE_SPARQL", "0").lower() not in {"1", "true", "yes"}:
         return None
-    if not os.environ.get("MCP_AUTH_TOKEN", "").strip():
+    if not consumer and not os.environ.get("MCP_AUTH_TOKEN", "").strip():
         return None
     raw = os.environ.get("MCP_SAFE_SPARQL_POLICY_JSON", "")
     try:
@@ -427,7 +427,7 @@ def _transport(
         import base64
         headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    opener = urllib.request.build_opener(_NoRedirect)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
     timeout = min(5.0, max(0.1, float(os.environ.get("MCP_SAFE_SPARQL_DB_TIMEOUT", "5"))))
     if deadline is not None:
         timeout = min(timeout, max(0.1, deadline - time.monotonic()))

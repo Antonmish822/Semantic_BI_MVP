@@ -5,7 +5,7 @@ MCP-сервер принимает JSON-RPC на `/mcp`. Инструмент `
 
 ## Как это работает
 
-1. Клиент отправляет JSON-RPC `tools/list` или `tools/call` на `http://<host>:<port>/mcp`.
+1. Клиент передаёт отдельный Bearer-токен и отправляет JSON-RPC `tools/list` или `tools/call` на `http://<host>:<port>/mcp`.
 2. `tools/list` публикует `sparql_select` только при включённом серверном флаге, bearer token и корректной конфигурации одного из режимов: свежей policy или выделенного синтетического repository. `tools/call` повторно проверяет доступность инструмента.
 3. В аналитической проекции MCP проверяет поддерживаемую форму и строит новый запрос с серверным dataset и разрешёнными URI; исходный SELECT не отправляется в GraphDB. В синтетическом режиме запрос проверяется и исполняется только в настроенном repository с ограничениями формы и результата.
 4. Отдельный транспорт ограничивает deadline, таймаут GraphDB, размер ответа, число строк, параллельность и состав результата.
@@ -71,6 +71,7 @@ python -m mcp.mcp_server
 
 ```bash
 curl -s -X POST http://127.0.0.1:8090/mcp \
+  -H "Authorization: Bearer ${MCP_AUTH_TOKEN}" \
   -H "Content-Type: application/json" \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"
 ```
@@ -89,7 +90,7 @@ cp .env.example .env
 docker compose up -d --build mcp-graphdb
 ```
 
-3. Endpoint будет доступен на `http://127.0.0.1:8090/mcp`.
+3. Endpoint доступен из сети приложения по `http://mcp-graphdb:8090/mcp`. Из контейнера проверьте его командой `docker compose exec mcp-graphdb python -c 'from mcp.profile_graphdb import fetch_catalog; print(sorted(fetch_catalog("http://127.0.0.1:8090/mcp", 5)))'`. Для локального запуска без контейнеров используйте loopback и экспортируйте `MCP_AUTH_TOKEN` в оболочке перед проверкой.
 
 Файл compose: [`compose.yaml`](compose.yaml)
 
@@ -101,7 +102,7 @@ GraphDB выбирается конфигурацией именно запущ�
 
 ```bash
 python -m mcp.profile_graphdb \
-  --url http://127.0.0.1:8091/mcp \
+  --url http://127.0.0.1:8090/mcp \
   --warmup 3 --repeats 50 --pause 0.5 --timeout 90 --seed 42 \
   --output logs/graphdb-benchmark-next.json
 ```

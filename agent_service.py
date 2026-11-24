@@ -2,84 +2,52 @@
 """AI agent microservice for Semantic BI (Polza.ai + MCP)."""
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 import json
 import math
 import os
 import re
-import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.request import Request as UrlRequest
 
 import httpx
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.middleware.cors import CORSMiddleware
+from security_controls import configured_service_token, service_authorized, SlidingWindowLimiter, model_endpoint
+from security_controls import load_env
+from profile_log import open_profile_log, profile_event
+from transport import open_upstream, read_bounded
+from model_http import model_client
 from fastapi.responses import JSONResponse, Response
-from starlette.concurrency import run_in_threadpool
-from mcp.safe_sparql import SYNTHETIC_MODE, synthetic_repository_enabled, validate_synthetic_result
+from mcp.safe_sparql import SYNTHETIC_MODE, synthetic_repository_enabled, validate_synthetic_result, policy_from_env, configured_max_rows
 
 ROOT = Path(__file__).resolve().parent
 SPARQL_SKILL_PATH = ROOT / ".agents" / "skills" / "bitrix24-graphdb-sparql" / "SKILL.md"
 
-PROFILE_LOCK = threading.Lock()
 PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 AGENT_PROGRESS_LOCK = threading.Lock()
-AGENT_PROGRESS: dict[str, dict[str, str]] = {}
-AGENT_SESSIONS: dict[str, list[dict[str, str]]] = {}
+AGENT_PROGRESS: dict[tuple[str, str], dict[str, str]] = {}
+AGENT_SESSIONS: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
 AGENT_SESSIONS_LOCK = threading.RLock()
+AGENT_RATE_LIMIT = SlidingWindowLimiter(limit=20, window_seconds=60)
+# One worker per admitted turn. No unbounded work queue or concurrent session writes.
+TURN_DEADLINE = ContextVar("turn_deadline", default=None)
+AGENT_WORKERS = 4
+EXECUTOR = ThreadPoolExecutor(max_workers=AGENT_WORKERS, thread_name_prefix="crm-agent")
+ACTIVE: dict[tuple[str, str], threading.Event] = {}
 
 
-def load_env() -> None:
-    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", ROOT / ".env"))
-    if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
-            value = value[1:-1]
-        os.environ.setdefault(key, value)
-
-
-def set_agent_progress(request_id: str, stage: str, message: str) -> None:
+def set_agent_progress(key: tuple[str, str], stage: str, message: str) -> None:
     with AGENT_PROGRESS_LOCK:
-        if request_id not in AGENT_PROGRESS and len(AGENT_PROGRESS) >= 256:
+        if key not in AGENT_PROGRESS and len(AGENT_PROGRESS) >= 256:
             AGENT_PROGRESS.pop(next(iter(AGENT_PROGRESS)))
-        AGENT_PROGRESS[request_id] = {"stage": stage, "message": message}
-
-
-def open_profile_log(component: str):
-    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or ROOT / "logs")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{component}-profile.jsonl"
-    return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))
-
-
-def profile_event(event: str, started: float | None = None, **fields: object) -> bool:
-    record = {
-        "event": event,
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        **fields,
-    }
-    if started is not None:
-        record["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
-    component = "mcp" if event in {"mcp_request", "graphdb_select"} else "agent"
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    try:
-        with PROFILE_LOCK, open_profile_log(component) as log:
-            log.write(line)
-    except OSError as exc:
-        print(f"Could not write {component} profile log ({type(exc).__name__})", file=sys.stderr)
-        return False
-    return True
+        AGENT_PROGRESS[key] = {"stage": stage, "message": message}
 
 
 def profile_request_id(value: str) -> str:
@@ -99,8 +67,11 @@ def _read_json_body(raw: bytes, max_bytes: int = 512 * 1024) -> dict[str, object
     if not raw or len(raw) > max_bytes:
         raise ValueError("Недопустимый размер запроса")
     try:
-        return json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Ожидается JSON-объект")
+        return data
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("Некорректный JSON") from exc
 
 
@@ -110,30 +81,45 @@ class ModelServiceError(Exception):
         self.status = status
 
 
+def upstream_timeout(setting, default):
+    timeout = float(os.environ.get(setting, default))
+    deadline = TURN_DEADLINE.get()
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.monotonic())
+    if timeout <= 0:
+        raise TimeoutError("Agent turn deadline reached")
+    return timeout
+
+
 def _polza_chat(messages: list[dict[str, str]], *, request_id: str = "", step: int = 0) -> dict[str, object]:
     started = time.monotonic()
     timing: dict[str, Any] = {"request_id": request_id, "stage": "model", "step": step}
     try:
-        base_url = os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1")
+        try:
+            base_url = model_endpoint(os.environ.get("POLZA_BASE_URL", "https://polza.ai/api/v1"), os.environ)
+        except ValueError as exc:
+            raise ModelServiceError(503, "Внешняя обработка отключена или провайдер не разрешён") from exc
         api_key = os.environ.get("POLZA_API_KEY", "").strip()
         if not api_key:
-            raise ValueError("Не задан POLZA_API_KEY")
+            raise ModelServiceError(503, "Не настроен ключ сервиса модели")
         payload = {
             "model": os.environ.get("POLZA_MODEL", "polza-chat"),
             "messages": messages,
             "stream": False,
+            "max_completion_tokens": 4096,
         }
-        timeout = float(os.environ.get("POLZA_TIMEOUT", "60"))
+        timeout = upstream_timeout("POLZA_TIMEOUT", "60")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("POLZA_TIMEOUT должен быть положительным числом")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         timing["request_bytes"] = len(body)
-        response = httpx.post(
-            base_url.rstrip("/") + "/chat/completions",
-            content=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-            timeout=httpx.Timeout(timeout, connect=min(8.0, timeout)),
-        )
+        with model_client() as client:
+            response = client.post(
+                base_url.rstrip("/") + "/chat/completions",
+                content=body,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                timeout=httpx.Timeout(timeout, connect=min(8.0, timeout)),
+            )
         timing["http_status"] = response.status_code
         timing["response_bytes"] = len(response.content)
         response.raise_for_status()
@@ -188,7 +174,7 @@ def _mcp_request(
             host = os.environ.get("MCP_HOST", "127.0.0.1")
             port = int(os.environ.get("MCP_PORT", "8090"))
             url = f"http://{host}:{port}/mcp"
-        timeout = float(os.environ.get("MCP_TIMEOUT", "30"))
+        timeout = upstream_timeout("MCP_TIMEOUT", "30")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         timing["request_bytes"] = len(body)
         mcp_headers = {
@@ -197,14 +183,17 @@ def _mcp_request(
             "X-MCP-Call": str(call),
         }
         mcp_token = (os.environ.get("AGENT_MCP_AUTH_TOKEN") or os.environ.get("MCP_AUTH_TOKEN", "")).strip()
-        if mcp_token:
-            mcp_headers["Authorization"] = f"Bearer {mcp_token}"
+        if not mcp_token:
+            raise ModelServiceError(503, "Не настроена авторизация MCP")
+        mcp_headers["Authorization"] = f"Bearer {mcp_token}"
         request = UrlRequest(url, data=body, headers=mcp_headers, method="POST")
-        with urlopen(request, timeout=timeout) as response:
+        with open_upstream(request, timeout=timeout) as response:
             timing["http_status"] = response.status
-            raw = response.read()
+            raw = read_bounded(response, 2 * 1024 * 1024, TURN_DEADLINE.get())
             timing["response_bytes"] = len(raw)
             result = json.loads(raw.decode("utf-8"))
+        if not isinstance(result, dict) or result.get("jsonrpc") != "2.0" or result.get("id") != payload["id"]:
+            raise ValueError("Некорректный ответ MCP")
         rpc_error = result.get("error") if isinstance(result, dict) else None
         rpc_result = result.get("result") if isinstance(result, dict) else None
         if isinstance(result, dict) and "error" in result:
@@ -300,7 +289,7 @@ def _mcp_tool_call(
         "params": {"name": name, "arguments": arguments},
     }, request_id=request_id, call=call, tool_name=name, model_step=model_step)
     if "error" in response:
-        raise ValueError(response["error"].get("message", "Ошибка MCP"))
+        raise ValueError("Ошибка вызова MCP")
     result = response.get("result") if isinstance(response, dict) else None
     if not isinstance(result, dict):
         raise ValueError("Некорректный ответ MCP")
@@ -311,8 +300,24 @@ def _model_safe_tool_result(name: str, result: dict[str, object], *, synthetic: 
     """Revalidate MCP output before adding it to provider context or the UI response."""
     if name == "run_named_query" and not synthetic:
         return {"status": "data_policy_unapproved"}
+    if name == "list_queries":
+        catalog = _read_named_query_catalog(result)
+        return {"content": [{"type": "text", "text": json.dumps({"queries": catalog}, ensure_ascii=False)}]}
+    if name == "explain_schema":
+        # A schema result is published TBox metadata, subject to the same external-processing policy.
+        item = result.get("content", [])
+        if len(item) == 1 and isinstance(item[0], dict) and item[0].get("type") == "text":
+            data = json.loads(item[0]["text"])
+            keys = {"prefixes", "data_graph_scope", "classes", "class_definitions", "properties",
+                    "object_properties", "datatype_properties", "published_ontologies", "ontology_schemas",
+                    "schema_source", "read_started_at", "read_completed_at", "schema_graphs_truncated",
+                    "schema_truncated", "published_schema_status", "entity_properties", "entity_properties_source"}
+            if isinstance(data, dict) and data.get("published_schema_status") in {"ok", "partial", "unavailable", "empty"}:
+                schema = {k: v for k, v in data.items() if k in keys}
+                return {"content": [{"type": "text", "text": json.dumps(schema, ensure_ascii=False)}]}
+        return {"status": "upstream_unavailable"}
     if name not in {"sparql_select", "run_named_query"}:
-        return result
+        return {"status": "disabled"}
     statuses = {"disabled", "invalid_query", "unsupported_query", "scope_denied", "rate_limited",
                 "timeout", "response_too_large", "upstream_unavailable", "data_policy_unapproved"}
     try:
@@ -329,12 +334,15 @@ def _model_safe_tool_result(name: str, result: dict[str, object], *, synthetic: 
             if not synthetic or not synthetic_repository_enabled():
                 raise ValueError
             clean_payload = validate_synthetic_result(payload)
+            if name == "sparql_select" and clean_payload["effective_limit"] > configured_max_rows():
+                raise ValueError
             return {"content": [{"type": "text", "text": json.dumps(clean_payload, ensure_ascii=False)}]}
         if name == "run_named_query":
             raise ValueError
-        policy = json.loads(os.environ.get("MCP_SAFE_SPARQL_POLICY_JSON", "{}"))
-        dimensions = policy.get("dimension_values", {}) if isinstance(policy, dict) else {}
-        dimensions = {str(key).lstrip("?"): values for key, values in dimensions.items()} if isinstance(dimensions, dict) else {}
+        policy = policy_from_env(consumer=True)
+        if policy is None:
+            raise ValueError
+        dimensions = {key.lstrip("?"): values for key, values in policy.dimension_values.items()}
         allowed_keys = {"count", *dimensions.keys()}
         bindings = payload.get("bindings")
         if not isinstance(bindings, list) or len(bindings) > 100:
@@ -344,7 +352,7 @@ def _model_safe_tool_result(name: str, result: dict[str, object], *, synthetic: 
             if not isinstance(binding, dict) or not set(binding).issubset(allowed_keys):
                 raise ValueError
             count = binding.get("count")
-            if type(count) is not int or count < 0:
+            if type(count) is not int or count < policy.min_group_size:
                 raise ValueError
             row = {"count": count}
             for key, value in binding.items():
@@ -357,9 +365,9 @@ def _model_safe_tool_result(name: str, result: dict[str, object], *, synthetic: 
             clean.append(row)
         truncated, limit = payload.get("truncated"), payload.get("effective_limit")
         snapshot, entailment = payload.get("snapshot_id"), payload.get("entailment")
-        if type(truncated) is not bool or type(limit) is not int or not 1 <= limit <= 100:
+        if type(truncated) is not bool or type(limit) is not int or not 1 <= limit <= min(policy.max_rows, configured_max_rows()) or len(bindings) > limit:
             raise ValueError
-        if not isinstance(snapshot, str) or not snapshot or entailment != "none":
+        if snapshot != policy.snapshot_id or entailment != policy.entailment:
             raise ValueError
         clean_payload = {"status": "ok", "bindings": clean, "truncated": truncated,
                          "effective_limit": limit, "snapshot_id": snapshot, "entailment": "none"}
@@ -368,9 +376,8 @@ def _model_safe_tool_result(name: str, result: dict[str, object], *, synthetic: 
         return {"content": [{"type": "text", "text": json.dumps({"status": "upstream_unavailable"})}]}
 
 
-def _agent_system_prompt(catalog: list[dict[str, object]], *, synthetic: bool = False) -> str:
-    base_prompt = os.environ.get(
-        "AGENT_SYSTEM_PROMPT",
+def _agent_system_prompt(*, synthetic: bool = False) -> str:
+    base_prompt = os.environ.get("AGENT_SYSTEM_PROMPT") or (
         "Ты — аналитический ассистент Semantic BI. "
         "Отвечай по-русски. Для ответов о данных обязательно используй MCP-инструменты. "
         "Если нужно уточнение, задай вопрос без вызова инструмента. "
@@ -379,7 +386,7 @@ def _agent_system_prompt(catalog: list[dict[str, object]], *, synthetic: bool = 
         "Если не хватает понимания схемы — используй explain_schema. "
         "Чтобы вызвать инструмент, ответь ТОЛЬКО JSON без пояснений: "
         "{\"tool_call\":{\"name\":\"<tool>\",\"arguments\":{...}}}. "
-        "НЕ используй формат <invoke ...> и НЕ добавляй обычный текст.",
+        "НЕ используй формат <invoke ...> и НЕ добавляй обычный текст."
     )
     tool_protocol_hint = (
         "\nОтвечай по-русски. Список инструментов перед текущим вопросом составлен по актуальному ответу MCP. "
@@ -458,7 +465,7 @@ def _agent_system_prompt(catalog: list[dict[str, object]], *, synthetic: bool = 
         )
     return (
         base_prompt + schema_usage_hint + capabilities_hint + named_query_hint
-        + json.dumps(catalog, ensure_ascii=False) + mandatory_data_boundary + tool_protocol_hint
+        + mandatory_data_boundary + tool_protocol_hint
     )
 
 
@@ -496,7 +503,17 @@ def _read_named_query_catalog(result: dict[str, object]) -> list[dict[str, objec
                 and isinstance(query.get("description"), str)
                 for query in queries
             ):
-                return queries
+                catalog = []
+                for query in queries:
+                    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", query["name"]):
+                        raise ValueError("Некорректное имя шаблона")
+                    params = query.get("params", [])
+                    if not isinstance(params, list) or len(params) > 32 or not all(isinstance(p, dict) for p in params):
+                        raise ValueError("Некорректная схема параметров")
+                    catalog.append({"name": query["name"], "description": query["description"][:4096],
+                                    "params": [{k: p[k] for k in ("name", "description", "required", "default")
+                                                if k in p} for p in params]})
+                return catalog
     raise ValueError("MCP вернул некорректный каталог именованных запросов")
 
 
@@ -525,33 +542,24 @@ def _looks_like_tool_call(content: str) -> bool:
 
 
 def _extract_tool_calls(content: str) -> list[dict[str, object]]:
-    content = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", content, flags=re.IGNORECASE)
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*([\s\S]*?)```\s*", content, re.IGNORECASE)
+    if fenced:
+        content = fenced[1]
 
     def normalize_call(payload: object) -> dict[str, object] | None:
         if not isinstance(payload, dict):
             return None
-        wrapped = payload.get("tool_call")
-        if not isinstance(wrapped, dict):
-            wrapped = payload.get("tool")
+        wrapped = payload.get("tool_call", payload.get("tool"))
         if isinstance(wrapped, dict):
             payload = wrapped
-
-        tool_calls = payload.get("tool_calls")
-        if isinstance(tool_calls, list):
-            items: list[dict[str, object]] = []
-            for item in tool_calls:
-                normalized = normalize_call(item)
-                if normalized:
-                    items.append(normalized)
-            if items:
-                return {"__batch__": items}
-
         name = payload.get("name") or payload.get("tool") or payload.get("tool_name")
         if not isinstance(name, str):
             return None
         arguments: dict[str, object] = {}
         for key in ("arguments", "args", "params"):
             value = payload.get(key)
+            if key in payload and not isinstance(value, dict):
+                return None
             if isinstance(value, dict):
                 arguments = value.copy()
                 break
@@ -577,179 +585,92 @@ def _extract_tool_calls(content: str) -> list[dict[str, object]]:
                 arguments.pop(key, None)
         return {"name": name, "arguments": arguments}
 
-    def iter_json_objects(text: str) -> list[str]:
-        objects: list[str] = []
-        depth = 0
-        start: int | None = None
-        in_string = False
-        escape = False
-        for index, ch in enumerate(text):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-                continue
-            if ch == "{":
-                if depth == 0:
-                    start = index
-                depth += 1
-            elif ch == "}" and depth > 0:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    objects.append(text[start:index + 1])
-                    start = None
-        return objects
-
-    def append_call(result: dict[str, object] | None, calls: list[dict[str, object]]) -> None:
-        if not result:
-            return
-        if "__batch__" in result:
-            calls.extend(result["__batch__"])
-        else:
-            calls.append(result)
-
-    calls: list[dict[str, object]] = []
-    for match in re.finditer(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL):
-        raw_args = match.group(1).strip()
-        if not raw_args:
-            continue
-        try:
-            candidate = json.loads(raw_args)
-        except json.JSONDecodeError:
-            candidate = None
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
+    raw = content.strip()
+    tagged_json = re.fullmatch(r"<tool_call>\s*(\{.*\}|\[.*\])\s*</tool_call>", raw, re.DOTALL)
+    if tagged_json:
+        raw = tagged_json[1]
     try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        payload = None
-    if isinstance(payload, list):
-        for item in payload:
-            append_call(normalize_call(item), calls)
-    else:
-        append_call(normalize_call(payload), calls)
-    if calls:
-        return calls
-
-    for candidate_raw in iter_json_objects(content):
-        try:
-            candidate = json.loads(candidate_raw)
-        except json.JSONDecodeError:
-            continue
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
-    for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
-        try:
-            candidate = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            continue
-        append_call(normalize_call(candidate), calls)
-    if calls:
-        return calls
-
-    invoke_match = re.search(r"<invoke\s+name=\"([\w_\-]+)\">(.*?)</invoke>", content, re.DOTALL)
-    if not invoke_match:
-        invoke_match = re.search(r"<tool_call>\s*([\w_\-]+)\s*\((.*?)\)\s*</tool_call>", content, re.DOTALL)
-    if invoke_match:
-        name = invoke_match.group(1)
-        raw_args = invoke_match.group(2).strip()
-        if not raw_args:
-            arguments = {}
+        payload = json.loads(raw)
+    except (ValueError, RecursionError):
+        # Legacy model formats from main are accepted only as one complete message.
+        tag = re.fullmatch(r'<(invoke|tool)\s+name="([\w-]+)">\s*(.*?)\s*</\1>', raw, re.DOTALL)
+        if tag:
+            name, arguments = tag[2], tag[3]
         else:
-            try:
-                arguments = json.loads(raw_args)
-            except json.JSONDecodeError:
-                arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": name, "arguments": arguments}]
-
-    tool_tag = re.search(r"<tool\s+name=\"([\w_\-]+)\">(.*?)</tool>", content, re.DOTALL)
-    if tool_tag:
-        name = tool_tag.group(1)
-        raw_args = tool_tag.group(2).strip()
-        if not raw_args:
-            return [{"name": name, "arguments": {}}]
+            simple = re.fullmatch(r'<(?:query\s+)?(list_queries|explain_schema|run_named_query|sparql_select)>'
+                                  r'\s*(.*?)\s*</(?:query\s+)?\1>', raw, re.DOTALL)
+            function = re.fullmatch(r"<tool_call>\s*([\w-]+)\s*\((.*?)\)\s*</tool_call>", raw, re.DOTALL)
+            match = simple or function
+            if not match:
+                return []
+            name, arguments = match[1], match[2]
         try:
-            arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": name, "arguments": arguments}]
-
-    for tag in ("list_queries", "explain_schema", "run_named_query", "sparql_select"):
-        tag_match = re.search(rf"<(?:query\s+)?{tag}[^>]*>(.*?)</(?:query\s+)?{tag}>", content, re.DOTALL)
-        if not tag_match:
-            tag_match = re.search(rf"<query\s+{tag}\b[^>]*>(.*?)</query>", content, re.DOTALL)
-        if not tag_match:
-            continue
-        raw_args = tag_match.group(1).strip()
-        if not raw_args:
-            return [{"name": tag, "arguments": {}}]
-        try:
-            arguments = json.loads(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        return [{"name": tag, "arguments": arguments}]
-
-    to_match = re.search(r"\bto\s*=\s*([\w_\-]+)\b", content)
-    if to_match:
-        return [{"name": to_match.group(1), "arguments": {}}]
-
-    return []
+            payload = {"name": name, "arguments": json.loads(arguments or "{}")}
+        except (ValueError, RecursionError):
+            return []
+    if isinstance(payload, dict) and "tool_calls" in payload:
+        payload = payload["tool_calls"]
+        if not isinstance(payload, list):
+            return []
+    items = payload if isinstance(payload, list) else [payload]
+    calls = []
+    for item in items:
+        call = normalize_call(item)
+        if call is None:
+            return []
+        calls.append(call)
+    return calls
 
 
-def _sanitize_history(raw: object) -> list[dict[str, str]]:
-    if not isinstance(raw, list):
-        return []
-    clean: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role")
-        content = item.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            clean.append({"role": role, "content": content})
-    return clean
+async def read_body(request: FastAPIRequest, limit: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit:
+            raise ValueError("Request body exceeds limit")
+        body.extend(chunk)
+    return bytes(body)
 
 
-load_env()
-app = FastAPI()
+load_env("agent")
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-cors_raw = os.environ.get("AGENT_CORS_ALLOW_ORIGINS", "*")
-origins = [item.strip() for item in cors_raw.split(",") if item.strip()]
-if not origins:
-    origins = ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# All browser requests are proxied through the authenticated dashboard.
+# The agent is never intended to be called directly from a browser.
 
 
 def _json_response(payload: object, status: int, request_id: str) -> JSONResponse:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return JSONResponse(
-        content=json.loads(body.decode("utf-8")),
+        content=payload,
         status_code=status,
         headers={"X-Request-ID": request_id},
     )
+
+
+@app.middleware("http")
+async def require_gateway_identity(request: FastAPIRequest, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    if not configured_service_token("AGENT_SERVICE_TOKEN"):
+        return JSONResponse({"error": "Service authentication not configured"}, status_code=503)
+    if (len(request.headers.getlist("X-Service-Token")) != 1 or len(request.headers.getlist("X-Actor-ID")) != 1
+            or not service_authorized(request.headers.get("X-Service-Token"), "AGENT_SERVICE_TOKEN")):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    actor = request.headers.get("X-Actor-ID", "")
+    if not 1 <= len(actor) <= 256 or any(ord(ch) < 33 or ord(ch) == 127 for ch in actor):
+        return JSONResponse({"error": "Missing actor identity"}, status_code=401)
+    if request.headers.get("origin") is not None:
+        return JSONResponse({"error": "Сервис принимает запросы через дашборд"}, status_code=403)
+    if request.method in {"POST", "DELETE"} and request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        return JSONResponse({"error": "Требуется application/json"}, status_code=415)
+    if request.method in {"POST", "DELETE"} and request.headers.get("content-length"):
+        try:
+            if int(request.headers["content-length"]) > 65536:
+                return JSONResponse({"error": "Request too large"}, status_code=413)
+        except ValueError:
+            return JSONResponse({"error": "Invalid request size"}, status_code=400)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/health")
@@ -763,7 +684,7 @@ async def agent_progress(request: FastAPIRequest) -> JSONResponse:
     if not PROFILE_ID.fullmatch(request_id):
         return JSONResponse({"error": "Некорректный request_id"}, status_code=400)
     with AGENT_PROGRESS_LOCK:
-        progress = AGENT_PROGRESS.get(request_id.lower())
+        progress = AGENT_PROGRESS.get((request.headers["X-Actor-ID"], request_id.lower()))
     if progress is None:
         return JSONResponse({"error": "Запрос не найден"}, status_code=404)
     return JSONResponse(progress, status_code=200)
@@ -774,7 +695,7 @@ async def agent_profile(request: FastAPIRequest) -> Response:
     try:
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             raise ValueError
-        raw = await request.body()
+        raw = await read_body(request, 1024)
         payload = _read_json_body(raw, max_bytes=1024)
         if not isinstance(payload, dict):
             raise ValueError
@@ -797,6 +718,9 @@ async def agent_profile(request: FastAPIRequest) -> Response:
     except (ValueError, UnicodeError):
         return Response(status_code=400)
 
+    with AGENT_PROGRESS_LOCK:
+        if (request.headers["X-Actor-ID"], request_id.lower()) not in AGENT_PROGRESS:
+            return Response(status_code=404)
     saved = profile_event(
         "agent_browser",
         request_id=request_id.lower(),
@@ -808,47 +732,97 @@ async def agent_profile(request: FastAPIRequest) -> Response:
     return Response(status_code=204 if saved else 503)
 
 
+@app.get("/api/agent/session")
+async def read_agent_session(request: FastAPIRequest) -> JSONResponse:
+    session_id = request.query_params.get("session_id", "")
+    key = (request.headers["X-Actor-ID"], session_id)
+    with AGENT_SESSIONS_LOCK:
+        entry = AGENT_SESSIONS.get(key)
+        if entry and entry[0] > time.time():
+            return JSONResponse({"history": entry[1]})
+        AGENT_SESSIONS.pop(key, None)
+    return JSONResponse({"error": "Диалог не найден"}, status_code=404)
+
+
+@app.delete("/api/agent/session")
+async def delete_agent_session(request: FastAPIRequest) -> JSONResponse:
+    """Authenticated caller can delete only its own in-memory conversation."""
+    try:
+        raw = await read_body(request, 2048)
+        payload = _read_json_body(raw, max_bytes=2048)
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not PROFILE_ID.fullmatch(session_id):
+            raise ValueError("Invalid session ID")
+    except (ValueError, AttributeError):
+        return JSONResponse({"error": "Invalid session ID"}, status_code=400)
+    with AGENT_SESSIONS_LOCK:
+        key = (request.headers["X-Actor-ID"], session_id)
+        AGENT_SESSIONS.pop(key, None)
+        if key in ACTIVE:
+            ACTIVE[key].set()
+    return JSONResponse({"deleted": True}, status_code=200)
+
+
 @app.post("/api/agent")
 async def agent(request: FastAPIRequest) -> JSONResponse:
-    raw = await request.body()
-    return await run_in_threadpool(
-        _run_agent, raw, profile_request_id(request.headers.get("X-Request-ID", "")),
-    )
+    request_id = profile_request_id(request.headers.get("X-Request-ID", ""))
+    actor_id = request.headers["X-Actor-ID"]
+    if not AGENT_RATE_LIMIT.allow(actor_id):
+        return _json_response({"error": "Rate limit exceeded"}, 429, request_id)
+    try:
+        raw = await read_body(request, 65536)
+        payload = _read_json_body(raw)
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, str) or not message.strip() or len(message) > 8192 or not message.encode("utf-8"):
+            raise ValueError
+    except (UnicodeError, ValueError):
+        return _json_response({"error": "Неверный формат сообщения"}, 400, request_id)
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not PROFILE_ID.fullmatch(session_id):
+        session_id = str(uuid.uuid4())
+    key = (actor_id, session_id)
+    deleted = threading.Event()
+    with AGENT_SESSIONS_LOCK:
+        if key in ACTIVE:
+            return _json_response({"error": "Дождитесь ответа в этом диалоге"}, 409, request_id)
+        if len(ACTIVE) >= AGENT_WORKERS:
+            return _json_response({"error": "Агент занят. Повторите запрос позже"}, 503, request_id)
+        ACTIVE[key] = deleted
+    try:
+        job = EXECUTOR.submit(run_turn, actor_id, session_id, request_id, message.strip(), len(raw), deleted)
+    except BaseException:
+        with AGENT_SESSIONS_LOCK:
+            ACTIVE.pop(key, None)
+        raise
+    # A disconnected browser must not release a still-running blocking worker.
+    return await asyncio.shield(asyncio.wrap_future(job))
 
 
-def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
-    set_agent_progress(request_id, "starting", "Подготавливаю запрос")
+def run_turn(actor_id, session_id, request_id, message, request_bytes, deleted):
+    progress_key = (actor_id, request_id)
+    set_agent_progress(progress_key, "starting", "Подготавливаю запрос")
     request_started = time.monotonic()
     model_calls = mcp_calls = history_count = context_bytes = response_bytes = 0
     outcome = "error"
-    http_status = request_bytes = error_class = reply_kind = None
+    http_status = error_class = reply_kind = None
+    response = None
     response_payload: dict[str, object] | None = None
+    deadline = TURN_DEADLINE.set(None)
     try:
-        request_bytes = len(raw)
-        if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
-            # Never print message bodies, history, tool arguments, or tool results.
-            print(f"Agent request bytes: {request_bytes}")
-        payload = _read_json_body(raw)
-        message = str(payload.get("message") or "").strip()
-        if not message:
-            outcome = "invalid_request"
-            http_status = 400
-            response_payload = {"error": "Поле message обязательно"}
-            return _json_response(response_payload, http_status, request_id)
-        history = _sanitize_history(payload.get("history"))
-        session_id = payload.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            session_id = str(uuid.uuid4())
+        TURN_DEADLINE.set(time.monotonic() + min(180, max(1, float(os.environ.get("AGENT_TURN_TIMEOUT", "50")))))
+        history = []
         with AGENT_SESSIONS_LOCK:
-            stored = AGENT_SESSIONS.get(session_id, [])
-        if stored:
-            history = stored
-        max_history = int(os.environ.get("AGENT_MAX_HISTORY", "12"))
+            entry = AGENT_SESSIONS.get((actor_id, session_id))
+            if entry is not None and entry[0] > time.time():
+                history = entry[1]
+            else:
+                AGENT_SESSIONS.pop((actor_id, session_id), None)
+        max_history = min(32, max(1, int(os.environ.get("AGENT_MAX_HISTORY", "12"))))
         history = history[-max_history:]
 
         history_count = len(history)
         allowed_tools = _allowed_agent_tools()
-        set_agent_progress(request_id, "tools", "Получаю список инструментов")
+        set_agent_progress(progress_key, "tools", "Получаю список инструментов")
         mcp_calls += 1
         tools = [tool for tool in _mcp_tools_list(request_id) if tool.get("name") in allowed_tools]
         synthetic = synthetic_repository_enabled() and any(
@@ -871,14 +845,14 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
         catalog: list[dict[str, object]] = []
         catalog_result = None
         if help_reply is None and "run_named_query" in available_tools:
-            set_agent_progress(request_id, "catalog", "Загружаю актуальный каталог запросов")
+            set_agent_progress(progress_key, "catalog", "Загружаю актуальный каталог запросов")
             mcp_calls += 1
             catalog_result = _mcp_tool_call("list_queries", {}, request_id, mcp_calls - 1)
             catalog = _read_named_query_catalog(catalog_result)
         template_names = {query["name"] for query in catalog}
-        system_prompt = _agent_system_prompt(catalog, synthetic=synthetic)
+        system_prompt = _agent_system_prompt(synthetic=synthetic)
         turn_tools = "Актуальные инструменты MCP и схемы аргументов для текущего запроса:\n" + json.dumps(
-            tools, ensure_ascii=False, separators=(",", ":"),
+            {"tools": tools, "catalog": catalog}, ensure_ascii=False, separators=(",", ":"),
         )
         if requested_tool and help_reply is None:
             turn_tools += (
@@ -895,19 +869,23 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
                 "role": "system",
                 "content": "Активный навык составления SPARQL:\n" + _load_sparql_skill(),
             })
-        messages.append({"role": "system", "content": turn_tools})
+        messages.append({"role": "user", "content": turn_tools})
         messages.append({"role": "user", "content": message})
         context_bytes = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
 
         def request_tool_calls() -> tuple[str, list[dict[str, object]], str, str | None]:
             nonlocal model_calls
             model_calls += 1
-            set_agent_progress(request_id, "model", "Анализирую запрос и подбираю данные")
+            set_agent_progress(progress_key, "model", "Анализирую запрос и подбираю данные")
+            if deleted.is_set() or time.monotonic() >= TURN_DEADLINE.get():
+                raise ModelServiceError(408, "Обработка запроса остановлена")
             response = _polza_chat(messages, request_id=request_id, step=model_calls)
             try:
                 model_message = response.get("choices", [{}])[0].get("message", {})
                 raw_content = model_message.get("content", "")
                 content_local = raw_content if isinstance(raw_content, str) else ""
+                if len(content_local) > 32768:
+                    raise ModelServiceError(502, "Слишком длинный ответ модели")
                 calls = _extract_tool_calls(content_local)
             except Exception as exc:
                 profile_event(
@@ -959,7 +937,8 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
             )
             return content_local, calls, result_kind, action
 
-        max_steps = int(os.environ.get("AGENT_MAX_STEPS", "4"))
+        max_steps = min(8, max(1, int(os.environ.get("AGENT_MAX_STEPS", "4"))))
+        tool_budget = 8
         repair_attempted = False
         requested_tool_retried = False
         called_tools: set[str] = set()
@@ -997,8 +976,13 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
                 })
                 continue
             if tool_calls:
+                if len(tool_calls) > tool_budget:
+                    raise ModelServiceError(422, "Превышен лимит вызовов инструментов")
+                tool_budget -= len(tool_calls)
                 messages.append({"role": "assistant", "content": content})
                 for tool_call in tool_calls:
+                    if deleted.is_set() or time.monotonic() >= TURN_DEADLINE.get():
+                        raise ModelServiceError(408, "Обработка запроса остановлена")
                     tool_name = str(tool_call["name"])
                     progress_messages = {
                         "list_queries": ("catalog", "Получаю актуальный каталог запросов"),
@@ -1009,7 +993,7 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
                     stage, progress_message = progress_messages.get(
                         tool_name, ("tool", "Выполняю шаг обработки данных"),
                     )
-                    set_agent_progress(request_id, stage, progress_message)
+                    set_agent_progress(progress_key, stage, progress_message)
                     # Do not echo model-generated filters, identifiers, or query text to the UI.
                     last_tool = {"name": tool_name}
                     if tool_name == "list_queries" and catalog_result is not None:
@@ -1047,8 +1031,17 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
             {"role": "assistant", "content": content},
         ]
         new_history = new_history[-max_history:]
+        while len(new_history) > 2 and sum(len(item["content"].encode("utf-8")) for item in new_history) > 98304:
+            new_history.pop(0)
         with AGENT_SESSIONS_LOCK:
-            AGENT_SESSIONS[session_id] = new_history
+            if deleted.is_set():
+                raise ValueError("Session deleted")
+            for key, entry in list(AGENT_SESSIONS.items()):
+                if entry[0] <= time.time():
+                    AGENT_SESSIONS.pop(key, None)
+            if len(AGENT_SESSIONS) >= 1024 and (actor_id, session_id) not in AGENT_SESSIONS:
+                AGENT_SESSIONS.pop(next(iter(AGENT_SESSIONS)))
+            AGENT_SESSIONS[(actor_id, session_id)] = (time.time() + 3600, new_history)
         response_payload = {
             "session_id": session_id,
             "reply": content,
@@ -1061,30 +1054,30 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
             response_payload["tool_result"] = last_tool_result
         http_status = 200
         outcome = "ok"
-        set_agent_progress(request_id, "done", "Ответ готов")
+        set_agent_progress(progress_key, "done", "Ответ готов")
         return _json_response(response_payload, http_status, request_id)
     except ModelServiceError as exc:
         outcome = "model_error"
         error_class = profile_error(exc.__cause__ or exc)
         http_status = exc.status
         response_payload = {"error": str(exc)}
-        set_agent_progress(request_id, "error", str(exc))
+        set_agent_progress(progress_key, "error", str(exc))
         return _json_response(response_payload, http_status, request_id)
     except (HTTPError, URLError, TimeoutError) as exc:
         outcome = "transport_error"
         error_class = profile_error(exc)
         http_status = 502
         response_payload = {"error": "Не удалось связаться с MCP"}
-        set_agent_progress(request_id, "error", "Не удалось завершить запрос")
+        set_agent_progress(progress_key, "error", "Не удалось завершить запрос")
         return _json_response(response_payload, http_status, request_id)
     except ValueError as exc:
         outcome = "value_error"
         error_class = profile_error(exc)
         http_status = 400
-        response_payload = {"error": str(exc)}
+        response_payload = {"error": "Некорректный запрос или ответ инструмента"}
         if os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"}:
             print(f"Agent value error: {profile_error(exc)}")
-        set_agent_progress(request_id, "error", "Не удалось обработать запрос")
+        set_agent_progress(progress_key, "error", "Не удалось обработать запрос")
         return _json_response(response_payload, http_status, request_id)
     except (BrokenPipeError, ConnectionResetError) as exc:
         outcome = "client_disconnected"
@@ -1095,9 +1088,12 @@ def _run_agent(raw: bytes, request_id: str) -> JSONResponse:
         error_class = profile_error(exc)
         http_status = 500
         response_payload = {"error": "Внутренняя ошибка агента"}
-        set_agent_progress(request_id, "error", "Произошла внутренняя ошибка")
+        set_agent_progress(progress_key, "error", "Произошла внутренняя ошибка")
         return _json_response(response_payload, http_status, request_id)
     finally:
+        TURN_DEADLINE.reset(deadline)
+        with AGENT_SESSIONS_LOCK:
+            ACTIVE.pop((actor_id, session_id), None)
         response_bytes = 0
         if response_payload is not None:
             response_bytes = len(json.dumps(response_payload, ensure_ascii=False).encode("utf-8"))
@@ -1125,4 +1121,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("AGENT_PORT", "8091"))
     with open_profile_log("agent") as log:
         print(f"Agent profile log: {log.name}")
-    uvicorn.run("agent_service:app", host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False, limit_concurrency=64)

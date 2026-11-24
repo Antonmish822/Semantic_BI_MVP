@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import hmac
+from security_controls import configured_service_token, service_authorized, valid_origin, body_length, SlidingWindowLimiter
+from transport import BoundedHTTPServer
 import os
 import re
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from .mcp_queries import QueryDefinitionError, has_named_query, list_named_queries, render_named_query
@@ -24,7 +25,28 @@ METHODS = {
 }
 TOOLS = {"sparql_select", "list_queries", "run_named_query", "explain_schema", "list_ontologies", "describe_ontology", "ontology_class_statistics"}
 
-MAX_BODY_BYTES = 1024 * 1024
+ONTOLOGY_TOOLS = {"list_ontologies", "describe_ontology", "ontology_class_statistics"}
+ANALYTIC_TOOLS = TOOLS - ONTOLOGY_TOOLS
+CALL_RATE = SlidingWindowLimiter(240, 60)
+MAX_BODY_BYTES = 64 * 1024
+
+
+def _validate_args(name: str, args: dict[str, Any]) -> None:
+    if name == "sparql_select" and set(args) == {"query"} and isinstance(args["query"], str):
+        return
+    if name == "run_named_query" and isinstance(args.get("name"), str):
+        if set(args) <= {"name", "parameters"} and isinstance(args.get("parameters", {}), dict):
+            return
+    if name in {"list_queries", "explain_schema", "list_ontologies"} and not args:
+        return
+    if name in {"describe_ontology", "ontology_class_statistics"}:
+        if (set(args) <= {"slug", "class_uri"} and isinstance(args.get("slug"), str)
+                and len(args["slug"]) <= 128 and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", args["slug"])):
+            uri = args.get("class_uri")
+            if "class_uri" not in args or (isinstance(uri, str) and len(uri) <= 1024
+                    and re.fullmatch(r'(?:https?://|urn:)[^<>"{}|^\x60\\\s\x00-\x1f]+', uri)):
+                return
+    raise JsonRpcError("Недопустимые аргументы", -32602)
 
 
 class JsonRpcError(Exception):
@@ -34,13 +56,10 @@ class JsonRpcError(Exception):
 
 
 def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    length = int(handler.headers.get("Content-Length", "0"))
-    if length <= 0 or length > MAX_BODY_BYTES:
-        raise JsonRpcError("Недопустимый размер запроса", -32600)
-    raw = handler.rfile.read(length)
     try:
-        return json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+        length = body_length(handler.headers, MAX_BODY_BYTES)
+        return json.loads(handler.rfile.read(length))
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise JsonRpcError("Некорректный JSON", -32700) from exc
 
 
@@ -113,6 +132,8 @@ def _tool_schemas() -> list[dict[str, Any]]:
         {"name":"describe_ontology","description":"Определения и аксиомы опубликованной схемы; можно ограничить классом.","inputSchema":{"type":"object","properties":{"slug":{"type":"string"},"class_uri":{"type":"string"}},"required":["slug"]}},
         {"name":"ontology_class_statistics","description":"Агрегированная статистика классов опубликованной онтологии по активной области CRM данных.","inputSchema":{"type":"object","properties":{"slug":{"type":"string"},"class_uri":{"type":"string"}},"required":["slug"]}},
     ]
+    for tool in tools:
+        tool["inputSchema"]["additionalProperties"] = False
     if max_rows is None:
         tools = [tool for tool in tools if tool["name"] != "sparql_select"]
     elif mode == SYNTHETIC_MODE:
@@ -139,7 +160,7 @@ def _format_content(data: Any) -> dict[str, Any]:
 
 
 def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = "", call: int = 0) -> dict[str, Any]:
-    tags = {"request_id": request_id, "step": call, "tool": name}
+    _validate_args(name, arguments)
     if name == "sparql_select":
         mode = select_mode()
         if mode is None:
@@ -208,34 +229,66 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
 class MCPHandler(BaseHTTPRequestHandler):
     server_version = "SemanticBIMCP/0.1"
 
+    def _reject(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        if status == 401:
+            self.send_header("WWW-Authenticate", 'Bearer realm="semantic-bi-mcp"')
+        self.end_headers()
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path.rstrip("/") != "/mcp":
             self.send_response(404)
             self.end_headers()
             return
-        expected_token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
-        if expected_token and not hmac.compare_digest(
-            self.headers.get("Authorization", ""), f"Bearer {expected_token}",
-        ):
-            self.send_response(401)
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
+        if not valid_origin(self.headers, required=False):
+            return self._reject(403)
+        analytics = configured_service_token("MCP_AUTH_TOKEN")
+        ontology = configured_service_token("ONTOLOGY_MCP_TOKEN")
+        if (not analytics and not ontology) or (analytics and analytics == ontology):
+            return self._reject(503)
+        credentials = self.headers.get_all("Authorization") or []
+        scheme, _, token = credentials[0].partition(" ") if len(credentials) == 1 else ("", "", "")
+        if scheme.lower() != "bearer":
+            return self._reject(401)
+        if service_authorized(token, "MCP_AUTH_TOKEN"):
+            scope, allowed = "analytics", ANALYTIC_TOOLS
+        elif service_authorized(token, "ONTOLOGY_MCP_TOKEN"):
+            scope, allowed = "ontology", ONTOLOGY_TOOLS
+        else:
+            return self._reject(401)
+        if self.headers.get_content_type() != "application/json":
+            return self._reject(415)
+        try:
+            length = body_length(self.headers, MAX_BODY_BYTES)
+        except ValueError:
+            return self._reject(413)
+        if not CALL_RATE.allow(scope):
+            return self._reject(429)
         started = time.monotonic()
         request_id = profile_request_id(self.headers.get("X-Request-ID", ""))
         call_header = self.headers.get("X-MCP-Call", "")
         call = int(call_header) if re.fullmatch(r"[0-9]{1,9}", call_header) else 0
         req_id = None
         timing = {"request_id": request_id, "step": call, "method": "unknown"}
-        if expected_token:
-            timing["caller_id"] = os.environ.get("MCP_AUTH_CLIENT_ID", "authenticated-service")
+        timing["caller_id"] = scope
         try:
-            timing["request_bytes"] = int(self.headers.get("Content-Length", "0"))
+            timing["request_bytes"] = length
             payload = _read_json(self)
-            if not isinstance(payload, dict):
+            if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0":
                 raise JsonRpcError("Некорректный JSON-RPC запрос", -32600)
             method = payload.get("method")
-            req_id = payload.get("id")
+            identifier = payload.get("id")
+            if identifier is not None and type(identifier) not in {int, str}:
+                raise JsonRpcError("Некорректный id", -32600)
+            if isinstance(identifier, str) and len(identifier) > 128:
+                raise JsonRpcError("Слишком длинный id", -32600)
+            req_id = identifier
+            if "params" in payload and not isinstance(payload["params"], dict):
+                raise JsonRpcError("Недопустимые параметры", -32602)
+            if req_id is None and method != "notifications/initialized":
+                raise JsonRpcError("Требуется id", -32600)
             if isinstance(method, str) and method in METHODS:
                 timing["method"] = method
             if method == "initialize":
@@ -245,17 +298,18 @@ class MCPHandler(BaseHTTPRequestHandler):
                     "capabilities": {"tools": {}},
                 }
             elif method == "notifications/initialized":
-                result = {}
+                self._reject(202)
+                return
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
-                result = {"tools": _tool_schemas()}
+                result = {"tools": [tool for tool in _tool_schemas() if tool["name"] in allowed]}
             elif method == "tools/call":
                 params = payload.get("params") or {}
                 tool_name = params.get("name")
-                arguments = params.get("arguments") or {}
-                if not tool_name:
-                    raise JsonRpcError("Не указан инструмент", -32602)
+                arguments = params.get("arguments", {})
+                if not isinstance(tool_name, str) or tool_name not in allowed:
+                    raise JsonRpcError("Инструмент недоступен", -32601)
                 if not isinstance(arguments, dict):
                     raise JsonRpcError("Аргументы должны быть объектом", -32602)
                 timing["tool"] = tool_name if isinstance(tool_name, str) and tool_name in TOOLS else "unknown"
@@ -282,12 +336,16 @@ class MCPHandler(BaseHTTPRequestHandler):
             if isinstance(exc, JsonRpcError):
                 code, message = exc.code, str(exc)
             else:
-                code, message = -32099, f"Внутренняя ошибка: {exc}"
+                code, message = -32099, "Не удалось выполнить запрос"
             timing.update(outcome="jsonrpc_error", rpc_code=code, error_class=profile_error(exc))
             response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
         else:
             timing.update(outcome="ok", result_bytes=len(json.dumps(result, ensure_ascii=False).encode("utf-8")))
         body = json.dumps(response, ensure_ascii=False).encode("utf-8")
+        if len(body) > 2 * 1024 * 1024:
+            body = json.dumps({"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32001, "message": "Результат превышает лимит"}}).encode()
+            timing.update(outcome="response_too_large")
         timing.update(http_status=200, response_bytes=len(body))
         try:
             _json_response(self, body, request_id)
@@ -301,16 +359,16 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt: str, *args: object) -> None:
-        print(f"{self.log_date_time_string()} {self.address_string()} {fmt % args}")
+        pass  # Structured timing records omit URLs, headers, arguments and rows.
 
 
 def main() -> None:
-    load_env()
+    load_env("mcp")
     with open_profile_log("mcp") as log:
         print(f"MCP profile log: {log.name}")
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8090"))
-    server = ThreadingHTTPServer((host, port), MCPHandler)
+    server = BoundedHTTPServer((host, port), MCPHandler)
     store = create_store_client()
     print(f"MCP server: http://{host}:{port}/mcp (read-only; RDF backend: {store.backend})")
     try:

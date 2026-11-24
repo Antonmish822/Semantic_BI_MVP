@@ -124,12 +124,12 @@ GROUP BY ?status LIMIT 2"""
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with patch.dict(os.environ, {"MCP_ENABLE_SAFE_SPARQL": "0", "MCP_SAFE_SPARQL_POLICY_JSON": "", "MCP_AUTH_TOKEN": "synthetic-token"}):
+            with patch.dict(os.environ, {"MCP_ENABLE_SAFE_SPARQL": "0", "MCP_SAFE_SPARQL_POLICY_JSON": "", "MCP_AUTH_TOKEN": "Synthetic-Mcp-Key-run1-2026-TEST-data-abcdef"}):
                 url = f"http://127.0.0.1:{server.server_port}/mcp"
                 def rpc(payload, authenticated=True):
                     headers = {"Content-Type": "application/json"}
                     if authenticated:
-                        headers["Authorization"] = "Bearer synthetic-token"
+                        headers["Authorization"] = "Bearer Synthetic-Mcp-Key-run1-2026-TEST-data-abcdef"
                     request = Request(url, data=json.dumps(payload).encode(), headers=headers)
                     with urlopen(request, timeout=2) as response:
                         return json.loads(response.read())
@@ -180,7 +180,7 @@ GROUP BY ?status LIMIT 2"""
             "min_group_size": 10, "max_rows": 2,
         }
         try:
-            env = {"MCP_ENABLE_SAFE_SPARQL": "1", "MCP_AUTH_TOKEN": "synthetic-mcp-token",
+            env = {"MCP_ENABLE_SAFE_SPARQL": "1", "MCP_AUTH_TOKEN": "Synthetic-Mcp-Key-run2-2026-TEST-data-abcdef",
                    "MCP_SAFE_SPARQL_POLICY_JSON": json.dumps(config),
                    "MCP_SAFE_SPARQL_URL": f"http://127.0.0.1:{upstream.server_port}",
                    "MCP_SAFE_SPARQL_REPOSITORY": "safe_synthetic_projection",
@@ -189,7 +189,7 @@ GROUP BY ?status LIMIT 2"""
                 url = f"http://127.0.0.1:{mcp.server_port}/mcp"
                 def rpc(payload):
                     request = Request(url, data=json.dumps(payload).encode(), headers={
-                        "Content-Type": "application/json", "Authorization": "Bearer synthetic-mcp-token",
+                        "Content-Type": "application/json", "Authorization": "Bearer Synthetic-Mcp-Key-run2-2026-TEST-data-abcdef",
                     })
                     with urlopen(request, timeout=2) as response:
                         return json.loads(response.read())
@@ -222,12 +222,17 @@ GROUP BY ?status LIMIT 2"""
             observed_messages.append(json.dumps(messages, ensure_ascii=False))
             return outputs.pop(0)
         safe_result = {"content": [{"type": "text", "text": json.dumps({"status": "ok", "bindings": [{"count": 12}], "truncated": False, "effective_limit": 2, "snapshot_id": "synthetic-2026-11-23", "entailment": "none"})}]}
-        policy_json = json.dumps({"dimension_values": {"?status": ["open"]}})
-        with patch.dict(os.environ, {"AGENT_ALLOW_SPARQL": "1", "AGENT_DEBUG": "0", "MCP_SAFE_SPARQL_POLICY_JSON": policy_json}), \
+        policy_json = json.dumps({
+            "version": "test-v1", "snapshot_id": "synthetic-2026-11-23", "entailment": "none",
+            "generated_at": datetime.now(timezone.utc).isoformat(), "graph_uri": "urn:projection",
+            "classes": ["urn:Deal"], "predicates": ["urn:status"], "max_rows": 2,
+            "property_rules": [{"domain": "urn:Deal", "predicate": "urn:status", "range_kind": "literal"}],
+            "dimensions": ["?status"], "dimension_values": {"?status": ["open"]}})
+        with patch.dict(os.environ, {"AGENT_SERVICE_TOKEN": "Synthetic-Gateway-Key-2026-for-testing-abcdef", "MCP_ENABLE_SAFE_SPARQL": "1", "AGENT_ALLOW_SPARQL": "1", "AGENT_DEBUG": "0", "MCP_SAFE_SPARQL_POLICY_JSON": policy_json}), \
              patch.object(agent_service, "_mcp_tools_list", return_value=[{"name": "sparql_select", "inputSchema": {}}]), \
              patch.object(agent_service, "_mcp_tool_call", return_value=safe_result), \
              patch.object(agent_service, "_polza_chat", side_effect=fake_model):
-            response = TestClient(agent_service.app).post("/api/agent", json={"message": "Сколько в группе?"})
+            response = TestClient(agent_service.app).post("/api/agent", headers={"X-Service-Token":"Synthetic-Gateway-Key-2026-for-testing-abcdef","X-Actor-ID":"test-user"}, json={"message": "Сколько в группе?"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["tool_result"], safe_result)
@@ -255,11 +260,11 @@ GROUP BY ?status LIMIT 2"""
             return outputs.pop(0)
         catalog = {"content": [{"type": "text", "text": json.dumps({"queries": [{"name": "employee_recent_activities", "description": "synthetic"}]})}]}
         raw_rows = {"content": [{"type": "text", "text": json.dumps({"bindings": [{"employee": "urn:crm:user:123", "employee_name": "Ada Example"}]})}]}
-        with patch.dict(os.environ, {"AGENT_ALLOW_SPARQL": "0", "AGENT_DEBUG": "0"}), \
+        with patch.dict(os.environ, {"AGENT_SERVICE_TOKEN": "Synthetic-Gateway-Key-2026-for-testing-abcdef", "MCP_ENABLE_SAFE_SPARQL": "1", "AGENT_ALLOW_SPARQL": "0", "AGENT_DEBUG": "0"}), \
              patch.object(agent_service, "_mcp_tools_list", return_value=[{"name": "list_queries"}, {"name": "run_named_query"}]), \
              patch.object(agent_service, "_mcp_tool_call", side_effect=[catalog, raw_rows]), \
              patch.object(agent_service, "_polza_chat", side_effect=fake_model):
-            response = TestClient(agent_service.app).post("/api/agent", json={"message": "Покажи активность"})
+            response = TestClient(agent_service.app).post("/api/agent", headers={"X-Service-Token":"Synthetic-Gateway-Key-2026-for-testing-abcdef","X-Actor-ID":"test-user"}, json={"message": "Покажи активность"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["tool_result"]["status"], "data_policy_unapproved")
         self.assertNotIn("Ada Example", observed[1])

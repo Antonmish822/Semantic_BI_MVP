@@ -5,3 +5,8 @@ __pycache__/
 *.py[cod]
 tests/
 docs/*.md
+
+.venv/
+logs/
+**/.DS_Store
+ontologies/.*

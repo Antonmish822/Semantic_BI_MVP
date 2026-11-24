@@ -16,7 +16,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from transport import open_upstream, read_bounded
 
 from rdflib import Graph, Literal, OWL, URIRef
 from rdflib.compare import isomorphic, to_canonical_graph
@@ -279,14 +280,20 @@ def delete_ontology(directory: Path, slug: str, store: object, expected: dict[st
             raise
 
 
-def restore_quarantined(directory: Path, operation_id: str, store: object) -> dict[str, object]:
+def restore_quarantined(directory: Path, operation_id: str, store: object, *, expected_slug=None, writer_factory=None) -> dict[str, object]:
     if not re.fullmatch(r"[0-9]{8}T[0-9]{6}-[a-f0-9]{12}",operation_id):
         raise OntologyError(400,"Некорректный идентификатор карантина")
     with FILE_LOCK, _process_lock(directory,".ontology-files.lock"), _process_lock(directory,".ontology-publication.lock"):
         purge_expired_quarantine(directory)
         source=quarantine_root(directory)/operation_id
         if not source.is_dir(): raise OntologyError(404,"Запись карантина не найдена или срок хранения истёк")
-        meta=_quarantine_metadata(source);slug=str(meta.get("slug",""));path=ontology_path(directory,slug)
+        meta = _quarantine_metadata(source)
+        slug = str(meta.get("slug", ""))
+        if expected_slug is not None and expected_slug != slug:
+            raise OntologyError(409, "Запись карантина относится к другой онтологии")
+        if meta.get("graph_uri") != ontology_uri(slug):
+            raise OntologyError(409, "URI графа карантина не соответствует slug")
+        path = ontology_path(directory, slug)
         if path.exists() or revision_dir(directory,slug).exists(): raise OntologyError(409,"Активная онтология с таким slug уже существует")
         ttl=source/(slug+".ttl")
         try:
@@ -313,7 +320,9 @@ def restore_quarantined(directory: Path, operation_id: str, store: object) -> di
                         raise OntologyError(409,"В GraphDB уже есть другой граф с этим URI; автоматическая перезапись запрещена")
                 else:
                     if getattr(store,"backend",None)!="graphdb": raise OntologyError(501,"Восстановление графа поддерживается только в GraphDB")
-                    url=graph_store_url(store.base_url,store.repository,str(meta["graph_uri"]))
+                    if writer_factory is not None:
+                        store = writer_factory()
+                    url=graph_store_url(store.base_url,store.repository,ontology_uri(slug))
                     try: graph_request(url,"PUT",store.username,store.password,store.timeout,backup_bytes)
                     except (HTTPError,TimeoutError,URLError,OSError):
                         # Reconcile an ambiguous PUT once and never retry blindly.
@@ -352,12 +361,13 @@ def slug_for(filename: str) -> str:
 
 
 def ontology_uri(slug: str) -> str:
-    if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+    if not isinstance(slug, str) or len(slug) > 128 or not SLUG_RE.fullmatch(slug):
         raise OntologyError(400, "Некорректный slug онтологии")
     return f"urn:bitrix24:ontology:{slug}"
 
 
 def ontology_path(directory: Path, slug: str) -> Path:
+    ontology_uri(slug)
     filename = slug + ".ttl"
     slug_for(filename)
     root = directory.resolve()
@@ -411,7 +421,7 @@ def save_text(directory: Path, slug: str, text: str, expected_sha256: str | None
             if not exists:
                 raise OntologyError(404, "Файл не найден")
             actual = digest(path)
-            if not hmac.compare_digest(actual, expected_sha256):
+            if not isinstance(expected_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256) or not hmac.compare_digest(actual, expected_sha256):
                 raise OntologyError(409, "Файл изменился после открытия; перечитайте его перед сохранением",
                                     current_sha256=actual)
         try:
@@ -482,8 +492,8 @@ def graph_request(url: str, method: str, username: str, password: str,
         headers["Authorization"] = "Basic " + base64.b64encode(
             f"{username}:{password}".encode("utf-8")).decode("ascii")
     request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=timeout) as response:
-        return response.read()
+    with open_upstream(request, timeout=timeout) as response:
+        return read_bounded(response, 4 * 1024 * 1024)
 
 
 def publish(directory: Path, slug: str, store: object, expected_sha256: str | None = None) -> dict[str, object]:
@@ -506,7 +516,7 @@ def _publish_locked(directory: Path, slug: str, store: object, expected_sha256: 
         if not archived.exists():
             archived.write_bytes(current_path.read_bytes())
     sha = expected_sha256 or current_sha
-    if not sha or not re.fullmatch(r"[a-f0-9]{64}", sha):
+    if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha):
         raise OntologyError(400, "Требуется корректный SHA-256 ревизии")
     if current_sha != sha and not (revision_dir(directory, slug) / f"{sha}.ttl").is_file():
         raise OntologyError(409, "Запрошенная сохранённая ревизия не найдена", current_sha256=current_sha)
@@ -516,6 +526,8 @@ def _publish_locked(directory: Path, slug: str, store: object, expected_sha256: 
     except FileNotFoundError as exc:
         raise OntologyError(404, "Файл не найден") from exc
     file_graph = parse_ttl(file_text, slug)
+    if any(file_graph.triples((None, OWL.imports, None))):
+        raise OntologyError(422, "Публикация owl:imports из редактора отключена")
     uri = ontology_uri(slug)
     url = graph_store_url(getattr(store, "base_url"), getattr(store, "repository"), uri)
     try:

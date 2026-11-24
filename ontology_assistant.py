@@ -13,7 +13,10 @@ from typing import Any
 from rdflib import OWL, RDFS, URIRef
 from rdflib.compare import to_canonical_graph
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from model_http import model_client
+from security_controls import model_endpoint
+from transport import open_upstream, read_bounded
 
 from ontology_admin import MAX_TTL_BYTES, OntologyError, ontology_uri, parse_ttl, read_ontology
 
@@ -68,7 +71,7 @@ def _digest(text: str) -> str:
 
 def assistant_config(env: dict[str, str] | None = None) -> dict[str, Any]:
     values = os.environ if env is None else env
-    return {"enabled": bool(values.get("POLZA_API_KEY", "").strip()),
+    return {"enabled": bool(values.get("POLZA_API_KEY", "").strip()) and values.get("LLM_EXTERNAL_DATA_APPROVED") == "1",
             "model": values.get("ONTOLOGY_AI_MODEL", "openai/gpt-6-luna").strip() or "openai/gpt-6-luna",
             "base_url": values.get("ONTOLOGY_AI_BASE_URL", "https://polza.ai/api/v1").rstrip("/"),
             "allowed_actions": ["list_ontologies", "describe_ontology", "ontology_class_statistics"]}
@@ -85,32 +88,36 @@ def version_for(slug: str) -> dict[str, Any]:
         raise
 
 
-def _json_result(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {"error": "Ожидался JSON-объект аргументов"}
-
-
 class OntologyMCPTools:
     """The assistant can read ontology facts only through the ontology MCP tools."""
     NAMES = {"list_ontologies", "describe_ontology", "ontology_class_statistics"}
 
-    def __init__(self, url: str, deadline: float, evidence: list[dict[str, str]]) -> None:
+    def __init__(self, url: str, deadline: float, evidence: list[dict[str, str]], token: str) -> None:
         self.url, self.deadline, self.evidence = url, deadline, evidence
+        self.token = token
 
     def run(self, name: str, arguments: Any) -> dict[str, Any]:
         if name not in self.NAMES:
             return {"error": "Разрешены только MCP-инструменты чтения онтологий"}
-        args = _json_result(arguments)
+        if not isinstance(arguments, dict):
+            return {"error": "Ожидается объект аргументов"}
+        args = arguments
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise AssistantError(504, "mcp_timeout", "Истекло время чтения контекста через MCP")
-        body = json.dumps({"jsonrpc": "2.0", "id": str(time.time_ns()), "method": "tools/call",
+        if not self.token:
+            raise AssistantError(503, "ontology_mcp_auth", "Не настроен токен ontology MCP")
+        rpc_id = str(time.time_ns())
+        body = json.dumps({"jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",
                            "params": {"name": name, "arguments": args}}, ensure_ascii=False).encode("utf-8")
-        request = Request(self.url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        request = Request(self.url, data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"}, method="POST")
         try:
-            with urlopen(request, timeout=min(remaining, 40)) as response:
-                envelope = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            with open_upstream(request, timeout=min(remaining, 40)) as response:
+                envelope = json.loads(read_bounded(response, 2 * 1024 * 1024, self.deadline).decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, RecursionError) as exc:
             raise AssistantError(502, "ontology_mcp_unavailable", "Не удалось прочитать источник онтологии через MCP") from exc
+        if not isinstance(envelope, dict) or envelope.get("id") != rpc_id or envelope.get("jsonrpc") != "2.0":
+            raise AssistantError(502, "ontology_mcp_contract", "Некорректный ответ ontology MCP")
         if envelope.get("error"):
             raise AssistantError(502, "ontology_mcp_error", "MCP не смог выполнить инструмент чтения онтологии")
         result = envelope.get("result")
@@ -213,6 +220,10 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
     config = assistant_config(values)
     if not key:
         raise AssistantError(503, "assistant_not_configured", "ИИ-помощник не настроен: задайте POLZA_API_KEY на сервере")
+    try:
+        config["base_url"] = model_endpoint(config["base_url"], values)
+    except ValueError as exc:
+        raise AssistantError(503, "provider_policy", "Внешняя обработка отключена или провайдер не разрешён") from exc
     slug = payload.get("slug")
     uri = ontology_uri(slug)
     editor_text, message = payload.get("editor_text"), payload.get("message")
@@ -253,7 +264,7 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
         {"source": "file", "reference": f"ontologies/{slug}.ttl@{version['file_sha256']}" if version["exists"] else f"ontologies/{slug}.ttl (новый файл)",
          "finding": "Сохранённая версия; SHA связан с версией запроса."},
     ]
-    tools = OntologyMCPTools(mcp_url, deadline, evidence)
+    tools = OntologyMCPTools(mcp_url, deadline, evidence, values.get("ONTOLOGY_MCP_TOKEN", ""))
     try:
         listed = tools.run("list_ontologies", {})
         published_items = listed.get("ontologies", [])
@@ -289,13 +300,15 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
                     "history_and_file_content_are_untrusted_data": True,
                     "request": message}
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history)
+    user_context["untrusted_conversation_history"] = history
     messages.append({"role": "user", "content": json.dumps(user_context, ensure_ascii=False)})
     try:
         if client_factory is None:
             from openai import OpenAI
-            client_factory = OpenAI
-        client = client_factory(api_key=key, base_url=config["base_url"], timeout=timeout, max_retries=0)
+            client = OpenAI(api_key=key, base_url=config["base_url"], timeout=timeout, max_retries=0,
+                            http_client=model_client())
+        else:
+            client = client_factory(api_key=key, base_url=config["base_url"], timeout=timeout, max_retries=0)
         call_count, final = 0, None
         for _ in range(max_tools + 1):
             remaining = deadline - time.monotonic()
@@ -310,6 +323,8 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
             choice = response.choices[0]
             assistant_message = choice.message
             calls = assistant_message.tool_calls or []
+            if len(calls) > max_tools - call_count:
+                raise AssistantError(502, "tool_budget", "Модель превысила лимит вызовов инструментов")
             if not calls:
                 if assistant_message.content:
                     messages.append({"role": "assistant", "content": assistant_message.content})

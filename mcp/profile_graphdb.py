@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -15,7 +16,8 @@ from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from transport import open_upstream, read_bounded
 
 
 def call_tool(url: str, tool: str, arguments: dict, timeout: float) -> tuple[dict, object]:
@@ -24,14 +26,18 @@ def call_tool(url: str, tool: str, arguments: dict, timeout: float) -> tuple[dic
         "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
         "params": {"name": tool, "arguments": arguments},
     }).encode()
-    request = Request(url, body, {"Content-Type": "application/json", "X-Request-ID": request_id})
+    token = os.environ.get("AGENT_MCP_AUTH_TOKEN") or os.environ.get("MCP_AUTH_TOKEN")
+    if not token:
+        raise ValueError("Для профилирования требуется MCP_AUTH_TOKEN")
+    request = Request(url, body, {"Content-Type": "application/json", "X-Request-ID": request_id,
+                                  "Authorization": f"Bearer {token}"})
     sample = {"request_id": request_id, "outcome": "ok"}
     result = None
     started = time.monotonic()
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with open_upstream(request, timeout=timeout) as response:
             sample["http_status"] = response.status
-            raw = response.read()
+            raw = read_bounded(response, 2 * 1024 * 1024)
             sample["response_bytes"] = len(raw)
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get("id") != request_id:
@@ -143,7 +149,7 @@ def summarize(samples: list[dict], templates: list[str]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:8091/mcp", help="MCP endpoint including /mcp")
+    parser.add_argument("--url", default="http://127.0.0.1:8090/mcp", help="MCP endpoint including /mcp")
     parser.add_argument("--mcp-log", type=Path, default=Path("logs/mcp-profile.jsonl"))
     parser.add_argument("--template", action="append", help="Name from list_queries. Repeat to select multiple; default: all.")
     parser.add_argument("--params-file", type=Path, help="JSON object keyed by template, with a parameter object per template.")
