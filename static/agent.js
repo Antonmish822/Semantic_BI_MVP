@@ -16,9 +16,32 @@ const savedPromptsToggle = savedPromptsPanel?.querySelector('.saved-prompts-togg
 const SAVED_PROMPTS_KEY = 'agentSavedPrompts';
 const MAX_SAVED_PROMPTS = 10;
 let savedPrompts = readSavedPrompts();
+migrateReactChat();
 let sessionId = sessionStorage.getItem('agentSessionId');
 let history = readStoredMessages('agentHistory');
 let transcript = readStoredMessages('agentTranscript');
+
+function migrateReactChat() {
+  const marker = 'agentReactChatMigrated';
+  try {
+    if (sessionStorage.getItem(marker)) return;
+    const oldSession = sessionStorage.getItem('reactAgentSession');
+    const oldTranscript = sessionStorage.getItem('reactAgentHistory');
+    if (!oldSession && !oldTranscript) return;
+    const hasLegacyChat = ['agentSessionId', 'agentHistory', 'agentTranscript']
+      .some((key) => sessionStorage.getItem(key) !== null);
+    if (!hasLegacyChat) {
+      if (oldSession) sessionStorage.setItem('agentSessionId', oldSession);
+      if (oldTranscript) {
+        sessionStorage.setItem('agentHistory', oldTranscript);
+        sessionStorage.setItem('agentTranscript', oldTranscript);
+      }
+    }
+    sessionStorage.setItem(marker, '1');
+  } catch {
+    // Storage can be unavailable or full.
+  }
+}
 
 function readStoredMessages(key) {
   try {

@@ -56,7 +56,7 @@ class GatewayRoutingChecks(unittest.TestCase):
         with patch.dict("os.environ", {"GATEWAY_WEB_APP_ENABLED": "1"}):
             react = self.client.get("/leads")
         self.assertEqual(react.status_code, 200)
-        self.assertIn(b"/assets/assets/index-", react.content)
+        self.assertIn(b"/assets/index-", react.content)
 
 
 if __name__ == "__main__":

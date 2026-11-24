@@ -103,7 +103,7 @@ WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY web ./
-COPY static/styles.css /app/static/styles.css
+COPY static /app/static
 RUN npm run build
 
 FROM runtime AS gateway

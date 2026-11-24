@@ -1,4 +1,6 @@
 (() => {
+  const xlsxSource = document.currentScript?.dataset.xlsxSrc || '/vendor/xlsx.full.min.js';
+
   function safeFilenamePart(value) {
     return String(value || 'table').normalize('NFKD').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'table';
   }
@@ -35,7 +37,7 @@
     if (window.sheetJsLoading) return window.sheetJsLoading;
     window.sheetJsLoading = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/vendor/xlsx.full.min.js';
+      script.src = xlsxSource;
       script.async = true;
       script.onload = () => resolve();
       script.onerror = () => reject(new Error('Не удалось загрузить SheetJS'));

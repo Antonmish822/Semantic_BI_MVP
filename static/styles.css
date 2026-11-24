@@ -292,10 +292,11 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 }
 @media (max-width: 740px) {
   .shell { padding: 20px 15px 32px; }
-  .topbar { align-items: flex-start; margin-bottom: 28px; }
+  .topbar { align-items: flex-start; flex-wrap: wrap; margin-bottom: 28px; }
   .header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 9px 12px; }
   .updated { display: none; }
-  .page-nav { margin-top: -14px; }
+  .page-nav { margin-top: -14px; overflow-x: auto; }
+  .page-nav a { flex: 0 0 auto; }
   .section-tabs { margin-top: -19px; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }

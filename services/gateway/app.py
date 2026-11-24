@@ -219,12 +219,14 @@ async def dispatch(path: str, request: Request):
         if os.environ.get("GATEWAY_WEB_APP_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}:
             react_index = STATIC / "react" / "index.html"
             if react_index.is_file():
-                return FileResponse(react_index, media_type="text/html; charset=utf-8", headers={"X-Request-ID": request_id})
+                return FileResponse(react_index, media_type="text/html; charset=utf-8",
+                                    headers={"X-Request-ID": request_id, "Cache-Control": "no-store"})
         return FileResponse(STATIC / PAGE_FILES[route_path], media_type="text/html; charset=utf-8",
-                            headers={"X-Request-ID": request_id})
+                            headers={"X-Request-ID": request_id, "Cache-Control": "no-store"})
     if request.method == "GET" and route_path.startswith("/assets/"):
-        target = (STATIC / "react" / route_path.removeprefix("/assets/")).resolve()
-        if target.is_file() and target.is_relative_to((STATIC / "react").resolve()):
+        assets = (STATIC / "react" / "assets").resolve()
+        target = (assets / route_path.removeprefix("/assets/")).resolve()
+        if target.is_relative_to(assets) and target.is_file():
             return FileResponse(target, headers={"X-Request-ID": request_id})
     if request.method == "GET" and route_path in ASSET_TYPES:
         return FileResponse(STATIC / route_path.lstrip("/"), media_type=ASSET_TYPES[route_path] + "; charset=utf-8",

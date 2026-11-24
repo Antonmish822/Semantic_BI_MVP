@@ -1,15 +1,19 @@
-import { DealsPage, EmployeesPage, LeadsPage } from '../features/analytics/AnalyticsPages';
-import { ChatPage } from '../features/chat/ChatPage';
-import { OntologyPage } from '../features/ontology/OntologyPage';
-import { PublishedQueriesPage, QueriesPage } from '../features/queries/QueriesPage';
+import { useEffect, useState } from 'react';
+import parse from 'html-react-parser';
+import { readPage, startPage } from './pages';
 
-export function App() {
-  const path = window.location.pathname.replace(/^\/assets(?=\/|$)/, '') || '/';
-  if (path === '/leads' || path === '/leads.html') return <LeadsPage />;
-  if (path === '/employees' || path === '/employees.html') return <EmployeesPage />;
-  if (path === '/agent' || path === '/agent.html') return <ChatPage />;
-  if (path === '/queries' || path === '/published-queries') return <PublishedQueriesPage />;
-  if (path === '/tools/queries') return <QueriesPage />;
-  if (path.startsWith('/tools') || path.startsWith('/ontologies')) return <OntologyPage />;
-  return <DealsPage />;
+export function App({ page }: { page: ReturnType<typeof readPage> }) {
+  const [content] = useState(() => parse(page.markup));
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    document.title = page.title;
+    // The page scripts attach their handlers to the DOM committed by React.
+    startPage(page.scripts).catch((cause: Error) => setError(cause.message));
+  }, [page]);
+
+  return <>
+    {content}
+    {error && <p className="error-banner" role="alert">{error}</p>}
+  </>;
 }
