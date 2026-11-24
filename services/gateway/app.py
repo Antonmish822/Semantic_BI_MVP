@@ -73,6 +73,24 @@ def _auth_enabled() -> bool:
     return os.environ.get("AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _canonical_auth_login(request: Request) -> Response | None:
+    """Keep OAuth state cookies on the same origin as the registered callback."""
+    configured = os.environ.get("AUTH_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    public = urlsplit(configured)
+    if (public.scheme not in {"http", "https"} or not public.netloc
+            or public.path not in {"", "/"} or public.query or public.fragment):
+        return None
+
+    current_host = request.headers.get("host", "")
+    if (request.url.scheme.lower(), current_host.lower()) == (public.scheme.lower(), public.netloc.lower()):
+        return None
+
+    target = configured + request.url.path
+    if request.url.query:
+        target += "?" + request.url.query
+    return RedirectResponse(target, status_code=302, headers={"Cache-Control": "no-store"})
+
+
 async def _session(request: Request) -> tuple[int, str | None]:
     secret = os.environ.get("AUTH_INTERNAL_SECRET", "")
     if not secret:
@@ -127,12 +145,18 @@ async def _proxy(name: str, request: Request, user_id: str | None = None) -> Res
         if secret:
             headers["x-gateway-secret"] = secret
     try:
-        async with httpx.AsyncClient(timeout=float(os.environ.get("SERVICE_PROXY_TIMEOUT", "60"))) as client:
+        async with httpx.AsyncClient(timeout=float(os.environ.get("SERVICE_PROXY_TIMEOUT", "60")),
+                                     follow_redirects=False) as client:
             upstream = await client.request(request.method, target, headers=headers,
                                             content=body)
-        passthrough = {key: upstream.headers[key] for key in ("content-type", "cache-control", "location", "set-cookie") if key in upstream.headers}
+        passthrough = {key: upstream.headers[key] for key in ("content-type", "cache-control", "location") if key in upstream.headers}
         passthrough["X-Request-ID"] = request_id
-        return Response(upstream.content, status_code=upstream.status_code, headers=passthrough)
+        response = Response(upstream.content, status_code=upstream.status_code, headers=passthrough)
+        # Set-Cookie is not a list-valued header: combining values can make
+        # browsers drop the session cookie on the OAuth callback.
+        for cookie in upstream.headers.get_list("set-cookie"):
+            response.raw_headers.append((b"set-cookie", cookie.encode("latin-1")))
+        return response
     except httpx.TimeoutException:
         return JSONResponse({"error": "Внутренний сервис не ответил вовремя"}, status_code=504, headers={"X-Request-ID": request_id})
     except httpx.HTTPError:
@@ -183,6 +207,10 @@ async def dispatch(path: str, request: Request):
         if status == 401:
             return RedirectResponse("/auth/login?next=" + quote(request.url.path + ("?" + request.url.query if request.url.query else "")), status_code=302)
     if route_path.startswith("/auth/"):
+        if route_path == "/auth/login" and _auth_enabled():
+            canonical_login = _canonical_auth_login(request)
+            if canonical_login is not None:
+                return canonical_login
         return await _proxy("auth", request, user_id)
     service = _route(route_path, request.method)
     if service:
