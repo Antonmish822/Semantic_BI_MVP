@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Инструменты — Запросы — CRM Pulse</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark" aria-hidden="true">P</div><div><p class="eyebrow">SEMANTIC BI · BITRIX24</p><h1>CRM Pulse</h1></div></div>
+      <div class="header-actions"><a class="auth-link" href="/auth/logout">Выйти</a></div>
+    </header>
+    <nav class="page-nav" aria-label="Страницы дашборда">
+      <a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a>
+      <a href="/agent">AI Agent</a><a href="/queries">Запросы</a><a class="active" href="/tools/ontology">Инструменты</a>
+    </nav>
+    <nav class="section-tabs" aria-label="Инструменты">
+      <a class="section-tab" href="/tools/ontology">Онтология</a>
+      <a class="section-tab active" href="/tools/queries" aria-current="page">Запросы</a>
+    </nav>
+
+    <div id="query-tool-notice" class="error-banner" role="status" hidden></div>
+    <section class="panel query-tool-panel" aria-labelledby="query-tool-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">РЕДАКТОР И ОТЛАДКА</p>
+          <h2 id="query-tool-title">Сохранённые SPARQL-запросы</h2>
+          <p class="panel-subtitle">Список связан с сохранёнными промптами в этом браузере. Проверка выполняется через MCP и применяет действующую серверную политику.</p>
+        </div>
+      </div>
+      <div class="query-tool-layout">
+        <aside class="query-tool-list-panel" aria-label="Список сохранённых запросов">
+          <div class="query-tool-list-heading"><h3>Запросы</h3><span id="saved-query-count" class="count-badge">0</span></div>
+          <div id="saved-query-list" class="saved-query-list"><p class="empty-state">Загружаю сохранённые запросы…</p></div>
+        </aside>
+        <div class="query-tool-editor">
+          <p id="selected-query-prompt" class="query-linked-prompt empty-state">Выберите запрос слева. Сохранённые запросы появятся после сохранения промпта с успешным вызовом sparql_select на вкладке AI Agent.</p>
+          <label for="saved-query-editor">SPARQL</label>
+          <textarea id="saved-query-editor" class="saved-query-editor" spellcheck="false" autocomplete="off" aria-label="Редактор SPARQL" disabled></textarea>
+          <div id="query-parameters" class="query-parameters" hidden></div>
+          <div class="query-tool-actions">
+            <button id="query-run" class="refresh" type="button" disabled>Проверить через MCP</button>
+            <button id="query-save" class="secondary-button" type="button" disabled>Сохранить изменения</button>
+            <button id="query-copy" class="secondary-button" type="button" disabled>Копировать</button>
+          </div>
+          <details id="query-publish-panel" class="query-publish-panel" hidden>
+            <summary>Опубликовать проверенный запрос в каталоге</summary>
+            <label for="query-publish-title">Название<input id="query-publish-title" maxlength="120" autocomplete="off" placeholder="Например, Сделки за период"></label>
+            <label for="query-publish-description">Описание<textarea id="query-publish-description" maxlength="500" rows="2" placeholder="Что показывает запрос"></textarea></label>
+            <label for="query-admin-token">Токен администратора инструментов<input id="query-admin-token" type="password" autocomplete="off" placeholder="ONTOLOGY_ADMIN_TOKEN"></label>
+            <button id="query-publish" class="secondary-button" type="button" disabled>Опубликовать</button>
+            <p id="query-publish-status" class="panel-subtitle" role="status" aria-live="polite"></p>
+          </details>
+          <p id="query-editor-status" class="panel-subtitle" role="status" aria-live="polite"></p>
+          <section class="query-result-panel" aria-labelledby="query-result-title">
+            <div class="query-result-heading">
+              <h3 id="query-result-title">Результат отладки</h3>
+              <div class="query-result-view-switch" role="group" aria-label="Формат результата">
+                <button id="query-result-table-mode" class="query-result-view-button active" type="button" aria-pressed="true">Таблица</button>
+                <button id="query-result-json-mode" class="query-result-view-button" type="button" aria-pressed="false">JSON</button>
+              </div>
+            </div>
+            <div id="query-result" class="query-result" aria-live="polite">Запрос ещё не запускался.</div>
+          </section>
+        </div>
+      </div>
+      <p class="query-tool-policy-note">Инструмент не подключается к GraphDB напрямую. MCP повторно проверяет и ограничивает каждый запрос; в рабочем режиме допустимы только запросы, разрешённые текущей аналитической policy.</p>
+    </section>
+  </main>
+  <script src="/table_export.js" defer></script>
+  <script src="/query_results.js" defer></script>
+  <script src="/query_parameters.js" defer></script>
+  <script src="/queries.js" defer></script>
+</body>
+</html>

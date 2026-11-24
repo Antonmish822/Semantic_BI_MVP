@@ -235,6 +235,108 @@ GROUP BY ?status LIMIT 2"""
         self.assertNotIn("customer@example.com", observed_messages[1])
         self.assertEqual(data["tool"], {"name": "sparql_select"})
 
+    def test_agent_p2_sends_verified_compact_facts_and_preserves_api_result(self):
+        from fastapi.testclient import TestClient
+        import agent_service
+
+        outputs = [
+            {"choices": [{"message": {"content": json.dumps({"tool_call": {"name": "sparql_select", "arguments": {"query": QUERY}}})}}]},
+            {"choices": [{"message": {"content": "За период найдено 12 сделок; результат полный."}}]},
+        ]
+        observed = []
+        def fake_model(messages, **kwargs):
+            observed.append(json.dumps(messages, ensure_ascii=False))
+            return outputs.pop(0)
+        safe_result = {"content": [{"type": "text", "text": json.dumps({"status": "ok", "bindings": [{"count": 12, "status": "open"}], "truncated": False, "effective_limit": 2, "snapshot_id": "synthetic-snapshot", "entailment": "none"})}]}
+        with patch.dict(os.environ, {"AGENT_CONTEXT_MODE": "p2", "AGENT_ALLOW_SPARQL": "1", "AGENT_DEBUG": "0", "MCP_SAFE_SPARQL_POLICY_JSON": json.dumps({"dimension_values": {"?status": ["open"]}})}), \
+             patch.object(agent_service, "_mcp_tools_list", return_value=[{"name": "sparql_select", "inputSchema": {}}]), \
+             patch.object(agent_service, "_mcp_tool_call", return_value=safe_result) as tool_call, \
+             patch.object(agent_service, "_polza_chat", side_effect=fake_model):
+            response = TestClient(agent_service.app).post("/api/agent", json={"message": "Сколько открытых сделок?"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["tool_result"], safe_result)
+        self.assertIn("verified_facts", observed[1])
+        self.assertIn("synthetic-snapshot", observed[1])
+        self.assertIn("truncated", observed[1])
+        self.assertEqual(tool_call.call_count, 1)
+
+    def test_agent_p1_compacts_schema_and_reuses_duplicate_call(self):
+        from fastapi.testclient import TestClient
+        import agent_service
+
+        outputs = [
+            {"choices": [{"message": {"content": json.dumps({"tool_call": {"name": "explain_schema", "arguments": {}}})}}]},
+            {"choices": [{"message": {"content": json.dumps({"tool_call": {"name": "explain_schema", "arguments": {}}})}}]},
+            {"choices": [{"message": {"content": "Граф схемы доступен с опубликованной связью."}}]},
+        ]
+        observed = []
+        def fake_model(messages, **kwargs):
+            observed.append(json.dumps(messages, ensure_ascii=False))
+            return outputs.pop(0)
+        full_schema = {"content": [{"type": "text", "text": json.dumps({"published_schema_status": "ok", "schema_truncated": False, "prefixes": {"graph_prefix": "urn:synthetic:"}, "data_graph_scope": {"graph_prefix": "urn:synthetic:"}, "ontology_schemas": [{"slug": "test", "graph_uri": "urn:ontology:test", "fingerprint": "sha256:test", "status": "ok", "classes": [{"uri": "urn:test:Deal", "types": ["urn:rdf:Class"], "comments": ["large comment"]}], "properties": [{"uri": "urn:test:status", "kind": "datatype", "domains": [{"kind": "uri", "value": "urn:test:Deal"}], "ranges": [], "axioms": ["large axiom"]}], "turtle": "very large turtle"}], "entity_properties_source": "CSV observations"})}]}
+        with patch.dict(os.environ, {"AGENT_CONTEXT_MODE": "p1", "AGENT_ALLOW_SPARQL": "0", "AGENT_DEBUG": "0"}), \
+             patch.object(agent_service, "_mcp_tools_list", return_value=[{"name": "explain_schema", "inputSchema": {}}]), \
+             patch.object(agent_service, "_mcp_tool_call", return_value=full_schema) as tool_call, \
+             patch.object(agent_service, "_polza_chat", side_effect=fake_model):
+            response = TestClient(agent_service.app).post("/api/agent", json={"message": "Покажи связи сделок"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(tool_call.call_count, 1)
+        self.assertIn("urn:test:status", observed[1])
+        self.assertIn("urn:ontology:test", observed[1])
+        self.assertNotIn("very large turtle", observed[1])
+        self.assertNotIn("large comment", observed[1])
+        self.assertIn("very large turtle", response.json()["tool_result"]["content"][0]["text"])
+
+    def test_agent_p2_bounds_history_and_keeps_latest_reference(self):
+        from fastapi.testclient import TestClient
+        import agent_service
+        observed = []
+        def fake_model(messages, **kwargs):
+            observed.append(json.dumps(messages, ensure_ascii=False))
+            return {"choices": [{"message": {"content": "Понял уточнение."}}]}
+        history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"старый контекст {i}: " + ("данные " * 100)} for i in range(12)]
+        history[-1] = {"role": "assistant", "content": "Последний фильтр уточнён: только сделки со статусом open."}
+        with patch.dict(os.environ, {"AGENT_CONTEXT_MODE": "p2", "AGENT_HISTORY_MAX_BYTES": "1024", "AGENT_DEBUG": "0"}), \
+             patch.object(agent_service, "_mcp_tools_list", return_value=[]), \
+             patch.object(agent_service, "_polza_chat", side_effect=fake_model):
+            response = TestClient(agent_service.app).post("/api/agent", json={"message": "А теперь за прошлую неделю?", "history": history})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("только сделки со статусом open", observed[0])
+        self.assertNotIn("старый контекст 0", observed[0])
+        self.assertIn("Часть старой истории не передана", observed[0])
+
+    def test_schema_projection_marks_incomplete_budget_and_allows_point_detail(self):
+        import agent_service
+        result = {"published_schema_status": "ok", "prefixes": {"graph_prefix": "urn:synthetic:"},
+                  "data_graph_scope": {"graph_prefix": "urn:synthetic:"}, "schema_truncated": False,
+                  "ontology_schemas": [{"slug": "synthetic", "graph_uri": "urn:synthetic:ontology",
+                      "fingerprint": "schema-v1", "status": "ok", "truncated": False,
+                      "classes": [{"uri": "urn:synthetic:Deal", "name": "Deal", "types": ["urn:rdf:Class"], "labels": [], "axioms": []}],
+                      "properties": [{"uri": f"urn:synthetic:property-{i}", "name": f"property{i}", "kind": "datatype", "types": [], "labels": [], "domains": [], "ranges": [], "superproperties": [], "inverse_properties": []} for i in range(350)]}]}
+        with patch.dict(os.environ, {"AGENT_SCHEMA_MAX_BYTES": "4096"}):
+            compact = agent_service._schema_for_model(result, question="найди редкую метрику", mode="p1")
+        self.assertTrue(compact["projection_incomplete"])
+        self.assertLessEqual(compact["projection_bytes"], compact["projection_budget_bytes"])
+        self.assertEqual(compact["data_graph_scope"], result["data_graph_scope"])
+        self.assertIn("describe_ontology", agent_service._allowed_agent_tools())
+        self.assertEqual(agent_service._schema_for_model(result, question="опиши онтологию", mode="p1"), result)
+
+    def test_p2_facts_preserve_comparison_parts_empty_and_truncation(self):
+        import agent_service
+        comparison = {"content": [{"type": "text", "text": json.dumps({
+            "status": "ok", "bindings": [
+                {"period": "2026-W46", "count": 12, "unit": "deals"},
+                {"period": "2026-W47", "count": 9, "unit": "deals"},
+            ], "truncated": True, "effective_limit": 2, "snapshot_id": "snapshot-test", "entailment": "none",
+        })}]}
+        facts = agent_service._answer_context(comparison)
+        self.assertEqual(facts["bindings"][0]["period"], "2026-W46")
+        self.assertEqual(facts["bindings"][1]["count"], 9)
+        self.assertEqual(facts["bindings"][0]["unit"], "deals")
+        self.assertTrue(facts["truncated"])
+        self.assertEqual(agent_service._answer_context({"content": [{"text": '{"status":"empty","bindings":[]}'}]}),
+                         {"status": "empty", "bindings": []})
+
     def test_agent_rejects_raw_mcp_bindings_before_model(self):
         import agent_service
         malicious = {"content": [{"type": "text", "text": json.dumps({"status": "ok", "bindings": [{"count": 14, "customer": "Ada Example", "id": "lead-123"}], "truncated": False, "effective_limit": 2, "snapshot_id": "s1", "entailment": "none"})}]}

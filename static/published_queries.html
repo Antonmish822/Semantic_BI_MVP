@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Запросы — CRM Pulse</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark" aria-hidden="true">P</div><div><p class="eyebrow">SEMANTIC BI · BITRIX24</p><h1>CRM Pulse</h1></div></div>
+    <div class="header-actions published-query-admin">
+      <label class="team-filter"><span>Токен администратора инструментов</span><input id="published-query-token" type="password" autocomplete="off" placeholder="ONTOLOGY_ADMIN_TOKEN"></label>
+      <a class="auth-link" href="/auth/logout">Выйти</a>
+    </div>
+  </header>
+  <nav class="page-nav" aria-label="Страницы дашборда">
+    <a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a>
+    <a href="/agent">AI Agent</a><a class="active" href="/queries" aria-current="page">Запросы</a><a href="/tools/ontology">Инструменты</a>
+  </nav>
+  <div id="published-query-notice" class="error-banner" role="status" hidden></div>
+  <section class="panel published-query-panel" aria-labelledby="published-query-title">
+    <div class="panel-heading">
+      <div><p class="eyebrow">ОБЩИЙ КАТАЛОГ</p><h2 id="published-query-title">Опубликованные запросы</h2>
+        <p class="panel-subtitle">Каталог доступен участникам проекта. Параметры можно заполнить и выполнить прямо на этой странице; их значения не сохраняются.</p></div>
+      <button id="published-query-refresh" class="secondary-button" type="button">Обновить</button>
+    </div>
+    <p id="published-query-admin-status" class="panel-subtitle" role="status"></p>
+    <div id="published-query-list" class="published-query-list"><p class="empty-state">Загружаю каталог…</p></div>
+  </section>
+</main>
+<script src="/table_export.js" defer></script>
+<script src="/query_results.js" defer></script>
+<script src="/query_parameters.js" defer></script>
+<script src="/published_queries.js" defer></script>
+</body>
+</html>

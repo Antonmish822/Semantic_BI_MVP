@@ -10,6 +10,7 @@ services:
       - /tmp
     volumes:
       - profile_logs:/app/logs
+      - published_queries:/app/published_queries:rw
       - ./ontologies:/app/ontologies:rw
     env_file:
       - ${CRM_MONITOR_ENV_FILE:-.env}
@@ -20,6 +21,7 @@ services:
       AGENT_BASE_URL: http://agent-service:8091
       RDF_URL: ${RDF_URL_DOCKER:-http://graphdb:7200}
       ONTOLOGY_MCP_URL: http://mcp-graphdb:8090/mcp
+      PUBLISHED_QUERY_DIR: /app/published_queries
     ports:
       - "127.0.0.1:${CRM_PULSE_MONITOR_PORT:-8088}:8088"
     depends_on:
@@ -95,3 +97,4 @@ networks:
 
 volumes:
   profile_logs:
+  published_queries:

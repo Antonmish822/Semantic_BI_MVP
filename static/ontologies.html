@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light"><title>Онтологии — CRM Pulse</title>
+  <meta name="color-scheme" content="light"><title>Инструменты — Онтология — CRM Pulse</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -10,11 +10,12 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark" aria-hidden="true">P</div><div><p class="eyebrow">SEMANTIC BI · BITRIX24</p><h1>CRM Pulse</h1></div></div>
     <div class="header-actions ontology-auth">
-      <label class="team-filter"><span>Токен администратора</span><input id="admin-token" type="password" autocomplete="off" placeholder="Сохраняется в этом браузере"></label>
+      <label class="team-filter"><span>Токен администратора инструментов</span><input id="admin-token" type="password" autocomplete="off" placeholder="Сохраняется в этом браузере"></label>
       <button id="auth-check" class="secondary-button" type="button">Проверить доступ</button>
     </div>
   </header>
-  <nav class="page-nav" aria-label="Страницы дашборда"><a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a><a href="/agent">AI Agent</a><a class="active" href="/ontologies">Онтологии</a></nav>
+  <nav class="page-nav" aria-label="Страницы дашборда"><a href="/">Пульс сделок</a><a href="/leads">Пульс лидов</a><a href="/employees">Сотрудники</a><a href="/agent">AI Agent</a><a href="/queries">Запросы</a><a class="active" href="/tools/ontology">Инструменты</a></nav>
+  <nav class="section-tabs" aria-label="Инструменты"><a class="section-tab active" href="/tools/ontology" aria-current="page">Онтология</a><a class="section-tab" href="/tools/queries">Запросы</a></nav>
   <div id="notice" class="error-banner" role="status" hidden></div>
   <dialog id="delete-confirm-dialog" class="ontology-confirm-dialog" aria-labelledby="delete-confirm-title">
     <div class="ontology-confirm-content">
