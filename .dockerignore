@@ -4,4 +4,14 @@
 __pycache__/
 *.py[cod]
 tests/
-docs/*.md
+backend/tests/
+.venv/
+logs/
+published_queries/
+docs/
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.cache/
+frontend/*.tsbuildinfo
+frontend/static/react/

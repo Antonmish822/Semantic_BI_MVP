@@ -1,0 +1,25 @@
+services:
+  gateway:
+    image: crm-pulse-react-smoke:local
+    build:
+      context: ../..
+      target: gateway
+    environment:
+      GATEWAY_WEB_APP_ENABLED: "${REACT_SMOKE_MODE:-1}"
+      AUTH_ENABLED: "1"
+      AUTH_INTERNAL_SECRET: react-smoke
+      AUTH_SERVICE_URL: http://fixtures:8100
+      ANALYTICS_SERVICE_URL: http://fixtures:8100
+      AGENT_BASE_URL: http://fixtures:8100
+      ONTOLOGY_SERVICE_URL: http://fixtures:8100
+    ports:
+      - "127.0.0.1::8088"
+    depends_on:
+      - fixtures
+  fixtures:
+    image: crm-pulse-react-smoke:local
+    pull_policy: never
+    working_dir: /fixtures
+    command: ["uvicorn", "react_smoke_fixture:app", "--host", "0.0.0.0", "--port", "8100"]
+    volumes:
+      - ./react_smoke_fixture.py:/fixtures/react_smoke_fixture.py:ro
