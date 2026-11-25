@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "check": "tsc -b --pretty false",
     "test:unit": "node --experimental-transform-types --test unit/migration.test.mjs",
-    "test:components": "playwright test --grep-invert \"React and legacy\"",
+    "test:components": "playwright test --grep-invert @visual",
     "test:e2e": "playwright test"
   },
   "dependencies": {

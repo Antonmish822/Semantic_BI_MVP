@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiJson, dealsApi, type Category, type ViewStateResponse } from './api';
 import { blockProps, Situations, useRefreshRevision } from './AnalyticsView';
-import { Connection, DashboardHeader, PageNav, RefreshButton, SectionTab } from './DashboardChrome';
+import { AnalyticsHeader, SectionTab } from './DashboardChrome';
 import { formatDate, formatNumber } from './DealsDetails';
 import { formatDuration, TrendChart } from './TrendChart';
 import { useApiRequest, type RequestState } from './useApiRequest';
@@ -99,31 +99,21 @@ export function EmployeesPage() {
   }));
 
   return <main className="shell">
-    <DashboardHeader title="CRM Pulse">
-      <label className="team-filter global-filter">
-        <span>Воронка</span>
+    <AnalyticsHeader title="Сотрудники" tabsLabel="Разделы сотрудников"
+      data={portfolio.data} offline={offline} refreshing={portfolio.status === 'loading'} onRefresh={refresh}
+      filter={
         <select id="project-filter" className="project-filter" aria-label="Общий фильтр по воронке"
           value={project} onChange={(event) => setProject(event.target.value)}>
-          <option value="all">Все категории</option>
+          <option value="all">Все воронки</option>
           {categories.map(({ id, name }) => <option key={id} value={id}>{name || `Категория ${id}`}</option>)}
         </select>
-      </label>
-      <Connection status={offline ? 'offline' : portfolio.data ? 'online' : 'pending'}>
-        {offline ? 'Нет соединения' : portfolio.data
-          ? portfolio.data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён'
-          : 'Подключение…'}
-      </Connection>
-      <span id="updated" className="updated">{portfolio.data ? `Обновлено ${formatDate(portfolio.data.as_of)}` : '—'}</span>
-      <RefreshButton disabled={portfolio.status === 'loading'} onClick={refresh}/>
-    </DashboardHeader>
-    <PageNav active="/employees"/>
-    <nav className="section-tabs" aria-label="Разделы сотрудников">
+      }>
       <SectionTab id="employees-tab" panel="employees-tab-panel" active={!summaries} onClick={() => setSummaries(false)}>Сотрудники</SectionTab>
       <SectionTab id="summaries-tab" panel="summaries-tab-panel" active={summaries} onClick={() => {
         setSummaries(true);
         setSummaryRevision((value) => value + 1);
       }}>Сводка</SectionTab>
-    </nav>
+    </AnalyticsHeader>
     <div id="error" className="error-banner" role="alert" hidden={!offline}>{portfolio.status === 'error' && portfolio.error}</div>
     <Situations data={view.status === 'error' ? undefined : view.data}/>
     <div id="employees-tab-panel" className="tab-content" hidden={summaries}>

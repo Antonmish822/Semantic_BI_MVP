@@ -1,10 +1,8 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { ClassStatistics } from './ClassStatistics';
-import { PageNav } from './DashboardChrome';
 import { ontologyApi, ontologyPath, type AssistantConfig, type DeletionPreview, type OntologyFile, type Quarantined } from './ontologyApi';
 import { OntologyAssistant } from './OntologyAssistant';
 import { OntologyDeleteDialog } from './OntologyDeleteDialog';
-import { ToolsNav } from './ToolsNav';
 import { useToolsToken } from './useToolsToken';
 
 type Editor = {
@@ -225,7 +223,6 @@ export function OntologyPage() {
         <button id="auth-check" className="secondary-button" type="button" disabled={busy} onClick={() => validate(true)}>Проверить доступ</button>
       </div>
     </header>
-    <PageNav active="/tools/ontology"/><ToolsNav active="ontology"/>
     <div id="notice" className={!notice || notice.error ? 'error-banner' : ''} role="status" hidden={!notice?.message}>{notice?.message}</div>
     {deletion && <OntologyDeleteDialog {...deletion} cancel={() => setDeletion(undefined)} confirm={confirmDelete}/>}
     <div className="ontology-admin-layout">

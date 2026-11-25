@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type FormEvent } from 'react';
 import { apiJson, ApiError } from './api';
 import { ChatMarkdown } from './ChatMarkdown';
-import { DashboardHeader, PageNav } from './DashboardChrome';
+import { DashboardHeader } from './DashboardChrome';
 import {
   clearChat, maxSavedPrompts, normalizeMessages, readChat, readSavedPrompts, savedPromptsKey, writeChat,
   type ChatMessage, type ChatSession, type SavedPrompt,
@@ -193,7 +193,6 @@ export function ChatPage() {
         dispatch({ type: 'reset' });
       }}>Сбросить чат</button>
     </DashboardHeader>
-    <PageNav active="/agent"/>
     <div id="chat-error" className="error-banner" role="alert" hidden={!chat.error}>{chat.error}</div>
     <section id="agent-progress" className="agent-progress" aria-label="Ход обработки запроса" hidden={!chat.progress}>
       <div className="agent-progress-copy">

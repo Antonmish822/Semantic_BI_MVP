@@ -1,9 +1,9 @@
-import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
 const categories = [{ id: '5', name: 'Входящие' }, { id: '9', name: 'Партнёры' }];
-const pulse = { available: true, summary: { active_deals: 42, created_24h: 3, created_7d: 12, created_30d: 34, red_deals_count: 4 }, categories, employees: [{ name: 'Анна', active_deals: 8, activities_24h: 2 }] };
-const leadPulse = { available: true, summary: { created_1d: 6, created_7d: 18, created_30d: 70, average_response_minutes: 42, sla_within_2h_ratio: 0.75, sla_eligible_count: 12 }, response_trend: [{ date: '2026-11-20', sla_within_2h_ratio: 0.75 }], red_leads: [{ title: 'Лид для проверки', manager: 'Анна' }] };
+const snapshotTime = '2026-11-25T09:35:00Z';
+const pulse = { available: true, as_of: snapshotTime, summary: { active_deals: 42, created_24h: 3, created_7d: 12, created_30d: 34, red_deals_count: 4 }, categories, employees: [{ name: 'Анна', active_deals: 8, activities_24h: 2 }] };
+const leadPulse = { available: true, as_of: snapshotTime, summary: { created_1d: 6, created_7d: 18, created_30d: 70, average_response_minutes: 42, sla_within_2h_ratio: 0.75, sla_eligible_count: 12 }, response_trend: [{ date: '2026-11-20', sla_within_2h_ratio: 0.75 }], red_leads: [{ title: 'Лид для проверки', manager: 'Анна' }] };
 const parameterizedQuery = 'PREFIX xsd: <http://www.w3.org/2001/XMLSchema#> SELECT * WHERE { FILTER (?enabled = {{enabled}}^^xsd:boolean) FILTER (?from = {{from}}^^xsd:date) FILTER (?at = {{at}}^^xsd:time) }';
 
 async function mockApi(page: Page) {
@@ -46,7 +46,7 @@ test('deals dashboard loads and follows funnel changes', async ({ page }) => {
   });
   await mockApi(page);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'CRM Pulse' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Пульс сделок', level: 1 })).toBeVisible();
   await expect(page.locator('#active-deals')).toHaveText('42');
   await page.getByRole('combobox', { name: /по воронке/ }).selectOption('5');
   await expect(page.getByText('Проверить задержки')).toBeVisible();
@@ -492,170 +492,221 @@ test('ontology imports, saves, publishes, rolls back and loads class statistics'
   await expect(page.getByRole('heading', { name: 'Сделка', exact: true })).toBeVisible();
 });
 
-test('mobile layout stays within the viewport', async ({ page }) => {
+const dashboardPages = [
+  ['/', 'deals', 'Пульс сделок', 'Проверить задержки'],
+  ['/leads', 'leads', 'Пульс лидов', 'Лид для проверки'],
+  ['/employees', 'employees', 'Сотрудники', 'Анна'],
+  ['/agent', 'agent', 'AI Agent', 'Сохранённые промпты'],
+  ['/queries', 'catalog', 'Запросы', 'Сделки на паузе'],
+  ['/tools/queries', 'debugger', 'Инструменты', 'Сохранённых запросов пока нет.'],
+  ['/tools/ontology', 'ontology', 'Инструменты', 'sales.ttl'],
+] as const;
+
+test('sidebar links and tool sections follow direct URLs and browser history', async ({ page }) => {
   await mockApi(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'CRM Pulse' })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
+  const navigation = page.getByRole('navigation', { name: 'Страницы дашборда' });
+  const tools = page.getByRole('navigation', { name: 'Инструменты' });
+  await page.goto('/index.html');
+  await expect(navigation.getByRole('link')).toHaveCount(6);
+  const deals = navigation.getByRole('link', { name: 'Пульс сделок', exact: true });
+  const leads = navigation.getByRole('link', { name: 'Пульс лидов', exact: true });
+  await page.keyboard.press('Tab');
+  await expect(deals).toBeFocused();
+  await expect(deals).toHaveCSS('outline-style', 'solid');
+  await page.keyboard.press('Tab');
+  await expect(leads).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(deals).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL('/leads');
+  await expect(leads).toHaveAttribute('aria-current', 'page');
+  await page.goBack();
+  await expect(page).toHaveURL('/index.html');
+  await expect(deals).toHaveAttribute('aria-current', 'page');
+  await page.goForward();
+  await expect(leads).toHaveAttribute('aria-current', 'page');
+
+  const aliases = [
+    ['/leads.html', 'Пульс лидов'], ['/employees.html', 'Сотрудники'], ['/agent.html', 'AI Agent'],
+    ['/published-queries', 'Запросы'], ['/ontologies', 'Инструменты'],
+    ['/ontologies.html', 'Инструменты'], ['/tools', 'Инструменты'],
+  ];
+  for (const [url, label] of aliases) {
+    await page.goto(url);
+    await expect(navigation.locator('[aria-current="page"]')).toHaveText(label);
+  }
+  const ontology = tools.getByRole('link', { name: 'Онтология' });
+  const debuggerLink = tools.getByRole('link', { name: 'Запросы' });
+  await expect(ontology).toHaveAttribute('aria-current', 'page');
+  await debuggerLink.click();
+  await expect(page).toHaveURL('/tools/queries');
+  await page.reload();
+  await expect(debuggerLink).toHaveAttribute('aria-current', 'page');
+  await ontology.click();
+  await expect(page).toHaveURL('/tools/ontology');
+  await expect(ontology).toHaveAttribute('aria-current', 'page');
 });
 
-for (const width of [1440, 768, 390]) {
-test(`React and legacy render the same pages at ${width}px`, async ({ context, page }, testInfo) => {
-  const legacy = await context.newPage();
-  const tabs = [page, legacy];
-  await Promise.all(tabs.map(async (tab) => {
-    await tab.setViewportSize({ width, height: 900 });
-    await tab.clock.setFixedTime(new Date('2026-11-25T09:00:00Z'));
-  }));
-  const pages = [
-    ['/', 'index.html', 'Проверить задержки'],
-    ['/leads', 'leads.html', 'Лид для проверки'],
-    ['/employees', 'employees.html', 'Анна'],
-    ['/agent', 'agent.html', 'Сохранённые промпты'],
-    ['/queries', 'published_queries.html', 'Сделки на паузе'],
-    ['/tools/queries', 'queries.html', 'Сохранённых запросов пока нет.'],
-    ['/tools/ontology', 'ontologies.html', 'sales.ttl'],
-  ];
-  const filenames = new Map(pages.map(([url, filename]) => [url, filename]));
-  const staticPath = (name: string) => fileURLToPath(new URL(`../static/${name}`, import.meta.url));
-  await legacy.route('**/*', async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    const filename = filenames.get(path)
-      ?? (/^\/(?:vendor\/)?[\w.]+\.(?:js|css)$/.test(path) ? path.slice(1) : undefined);
-    if (filename) await route.fulfill({ path: staticPath(filename) });
-    else await route.fallback();
-  });
-  await Promise.all([mockApi(page), mockApi(legacy)]);
+for (const width of [1440, 390]) {
+  test(`analytics header follows reading order and reports data status at ${width}px`, async ({ page }) => {
+    await mockApi(page);
+    await page.setViewportSize({ width, height: 900 });
+    const initialRequest = Promise.withResolvers<void>();
+    let failed = false;
+    await page.route('**/api/pulse?*', async (route) => {
+      await initialRequest.promise;
+      await route.fulfill(failed
+        ? { status: 503, json: { error: 'База недоступна' } }
+        : { json: { ...pulse, categories: [{ id: '5', name: 'Очень длинное название воронки для проверки адаптивной шапки' }] } });
+    });
+    await page.goto('/');
+    const header = page.locator('.analytics-header');
+    const status = header.getByRole('status');
+    const time = header.locator('time');
+    const refresh = header.getByRole('button', { name: 'Обновить данные' });
+    await expect(status).toHaveText('Подключение…');
+    await expect(time).toHaveCount(0);
+    await expect(refresh).toBeDisabled();
+    initialRequest.resolve();
+    await expect(status).toHaveText('GraphDB подключён');
+    await expect(time).toHaveAttribute('datetime', snapshotTime);
+    await expect(refresh).toBeEnabled();
 
-  async function compare(name: string) {
-    const filePrefix = name.replace(/[^a-z0-9-]+/gi, '-').replace(/^-/, '') || 'home';
-    const [actual, expected] = await Promise.all(tabs.map(
-      (tab, index) => tab.locator('main').screenshot({
-        animations: 'disabled',
-        path: testInfo.outputPath(`${filePrefix}-${index === 0 ? 'react' : 'legacy'}.png`),
-      }),
-    ));
-    if (actual.equals(expected)) return;
-    const difference = await page.evaluate(async ([react, legacy]) => {
-      async function decode(base64: string) {
-        const image = new Image();
-        image.src = `data:image/png;base64,${base64}`;
-        await image.decode();
-        const canvas = document.createElement('canvas');
-        canvas.width = image.width;
-        canvas.height = image.height;
-        const context = canvas.getContext('2d')!;
-        context.drawImage(image, 0, 0);
-        return { canvas, context, pixels: context.getImageData(0, 0, canvas.width, canvas.height) };
-      }
-      const [actual, expected] = await Promise.all([decode(react), decode(legacy)]);
-      const dimensions = (image: ImageData) => `${image.width}×${image.height}`;
-      if (dimensions(actual.pixels) !== dimensions(expected.pixels)) {
-        return { dimensions: [dimensions(actual.pixels), dimensions(expected.pixels)], pixels: -1 };
-      }
-      let pixels = 0;
-      const output = actual.context.createImageData(actual.pixels.width, actual.pixels.height);
-      for (let i = 0; i < output.data.length; i += 4) {
-        const changed = [0, 1, 2].some((channel) =>
-          Math.abs(actual.pixels.data[i + channel] - expected.pixels.data[i + channel]) > 4);
-        if (changed) pixels++;
-        output.data.set(changed ? [255, 30, 60, 255] : [255, 255, 255, 255], i);
-      }
-      actual.context.putImageData(output, 0, 0);
-      return { pixels, diff: actual.canvas.toDataURL().split(',')[1] };
-    }, [actual.toString('base64'), expected.toString('base64')]);
-    // Chromium can round a few edge pixels differently during rasterization.
-    if (difference.pixels < 0 || difference.pixels > 2) {
-      if (difference.diff) await testInfo.attach(`${name} diff`, {
-        body: Buffer.from(difference.diff, 'base64'), contentType: 'image/png',
-      });
-      expect(difference.dimensions?.[0], `Screenshot dimensions for ${name}`).toBe(difference.dimensions?.[1]);
-      expect(difference.pixels, `Different pixels in ${name}`).toBeLessThanOrEqual(2);
+    const logout = header.getByRole('link', { name: 'Выйти' });
+    const filter = header.getByRole('combobox');
+    const tabs = header.getByRole('navigation').getByRole('button');
+    await expect(logout).toHaveAttribute('href', '/auth/logout');
+    await logout.focus();
+    const inOneRow = await page.evaluate(() => CSS.supports('reading-flow', 'grid-rows')) && width === 1440;
+    for (const control of inOneRow
+      ? [tabs.nth(0), tabs.nth(1), filter, refresh]
+      : [filter, refresh, tabs.nth(0), tabs.nth(1)]) {
+      await page.keyboard.press('Tab');
+      await expect(control).toBeFocused();
     }
-  }
 
-  for (const [url, , ready] of pages) {
-    await test.step(url, async () => {
-      await Promise.all([page.goto(url), legacy.goto(url)]);
-      await Promise.all([page, legacy].map((tab) => expect(tab.getByText(ready).first()).toBeVisible()));
-      if (url === '/tools/ontology') {
-        await Promise.all([page, legacy].map((tab) => expect(tab.locator('#assistant-state')).toHaveText('Готов')));
+    await filter.selectOption('5');
+    await expect(filter).toHaveValue('5');
+    await expect(status).toHaveText('GraphDB подключён');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    failed = true;
+    await refresh.click();
+    await expect(status).toHaveText('Нет соединения');
+    await expect(time).toHaveAttribute('datetime', snapshotTime);
+  });
+}
+
+for (const width of [1440, 768, 390, 320]) {
+  for (const [url, name, label, ready] of dashboardPages) {
+    test(`dark React layout for ${name} at ${width}px`, { tag: '@visual' }, async ({ page }, testInfo) => {
+      test.setTimeout(60_000);
+      await mockApi(page);
+      await page.setViewportSize({ width, height: 900 });
+      await page.clock.setFixedTime(new Date('2026-11-25T09:00:00Z'));
+      const errors: string[] = [];
+      page.on('pageerror', error => errors.push(error.message));
+
+      async function verifyLayout() {
+        const sidebar = page.locator('.app-sidebar');
+        const main = page.locator('main');
+        await expect(main).toBeVisible();
+        await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+        const sidebarBox = (await sidebar.boundingBox())!;
+        const mainBox = (await main.boundingBox())!;
+        const sidebarWidth = width >= 1120 ? 224 : width >= 768 ? 168 : 64;
+        expect(sidebarBox.width).toBe(sidebarWidth);
+        expect(sidebarBox.x + sidebarBox.width).toBeLessThanOrEqual(mainBox.x);
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(scrollWidth).toBeLessThanOrEqual(width);
       }
-      if (url === '/') await Promise.all(tabs.map((tab) => expect(tab.locator('#active-deals')).toHaveText('42')));
-      if (url === '/leads' || url === '/employees') {
-        await Promise.all(tabs.map((tab) => expect(tab.getByText('Проверить задержки')).toBeVisible()));
+
+      async function capture(name: string) {
+        await verifyLayout();
+        if (width === 320) return;
+        const filename = `${name}-${width}.png`;
+        if (process.env.PLAYWRIGHT_COMPARE_SCREENSHOTS === '1') {
+          await expect(page).toHaveScreenshot(filename, { maxDiffPixelRatio: 0.002, timeout: 15_000 });
+          return;
+        }
+        await page.screenshot({
+          animations: 'disabled',
+          path: testInfo.outputPath(filename),
+        });
       }
-      if (url === '/leads') {
-        await Promise.all(tabs.map((tab) => expect(tab.locator('#lead-conversion-category option')).toHaveCount(3)));
+
+      await page.goto(url);
+      await expect(page.getByText(ready).first()).toBeVisible();
+      const nav = page.getByRole('navigation', { name: 'Страницы дашборда' });
+      await expect(nav.locator('[aria-current="page"]')).toHaveText(label);
+      if (name === 'deals') await expect(page.locator('#active-deals')).toHaveText('42');
+      if (name === 'leads') await expect(page.locator('#lead-conversion-category option')).toHaveCount(3);
+      if (name === 'employees') await expect(page.locator('#employee-activities-count')).toHaveText('1');
+      if (name === 'ontology') await expect(page.locator('#assistant-state')).toHaveText('Готов');
+      await capture(name);
+
+      if (name === 'deals') {
+        await page.locator('#toggle-red').click();
+        await page.locator('#toggle-activities').click();
+        await expect(page.locator('#red-table')).toBeVisible();
+        await expect(page.locator('#activities-table')).toBeVisible();
+        await capture('deals-lists');
+        await page.getByRole('button', { name: 'Сводки' }).click();
+        await expect(page.locator('#activity-distribution-chart')).toBeVisible();
+        await capture('deals-distribution');
       }
-      if (url === '/employees') {
-        await Promise.all(tabs.map((tab) => expect(tab.locator('#employee-activities-count')).toHaveText('1')));
+
+      if (name === 'leads') {
+        await page.getByRole('button', { name: 'Сводки' }).click();
+        await expect(page.locator('#sla-trend-chart')).toBeVisible();
+        await expect(page.locator('#conversion-trend-chart')).toBeVisible();
+        await capture('lead-charts');
       }
-      await compare(url);
-      if (url === '/') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.locator('#toggle-red').click();
-          await tab.locator('#toggle-activities').click();
-          await expect(tab.locator('#red-table')).toBeVisible();
-          await expect(tab.locator('#activities-table')).toBeVisible();
-        }));
-        await compare('deals lists');
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.getByRole('button', { name: 'Сводки' }).click();
-          await expect(tab.locator('#activity-distribution-chart')).toBeVisible();
-        }));
-        await compare('deals distribution');
+
+      if (name === 'employees') {
+        await page.locator('#toggle-employee-activities').click();
+        await expect(page.locator('#employee-activities-table')).toBeVisible();
+        await page.getByRole('button', { name: 'Сводка', exact: true }).click();
+        await expect(page.locator('#employee-pulse-chart')).toBeVisible();
+        await capture('employee-charts');
       }
-      if (url === '/leads') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.getByRole('button', { name: 'Сводки' }).click();
-          await expect(tab.locator('#sla-trend-chart')).toBeVisible();
-          await expect(tab.locator('#conversion-trend-chart')).toBeVisible();
-        }));
-        await compare('lead charts');
+
+      if (name === 'catalog') {
+        await page.getByText('Сделки на паузе').click();
+        await page.getByRole('button', { name: 'Выполнить запрос' }).click();
+        await expect(page.getByText('urn:deal:1')).toBeVisible();
+        await capture('catalog-result');
       }
-      if (url === '/employees') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.locator('#toggle-employee-activities').click();
-          await expect(tab.locator('#employee-activities-table')).toBeVisible();
-        }));
-        await compare('employee activities');
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.getByRole('button', { name: 'Сводка' }).click();
-          await expect(tab.locator('#employee-pulse-chart')).toBeVisible();
-        }));
-        await compare('employee charts');
+
+      if (name === 'agent') {
+        await page.evaluate(() => sessionStorage.setItem('agentTranscript', JSON.stringify([
+          { role: 'user', content: 'Покажи сделки' },
+          { role: 'assistant', content: '## Сделки\n\n| Название |\n| --- |\n| Пример |' },
+        ])));
+        await page.reload();
+        await expect(page.getByRole('cell', { name: 'Пример' })).toBeVisible();
+        await capture('agent-answer');
+        if (width === 390) {
+          const download = page.waitForEvent('download');
+          await page.getByRole('button', { name: 'Скачать CSV' }).click();
+          expect((await download).suggestedFilename()).toMatch(/\.csv$/);
+        }
       }
-      if (url === '/queries') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.getByText('Сделки на паузе').click();
-          await tab.getByRole('button', { name: 'Выполнить запрос' }).click();
-          await expect(tab.getByText('urn:deal:1')).toBeVisible();
-        }));
-        await compare('catalog result');
+
+      if (name === 'ontology') {
+        await page.getByRole('button', { name: 'sales.ttl' }).click();
+        await expect(page.getByRole('textbox', { name: 'Редактор Turtle' })).toHaveValue(/owl:Ontology/);
+        const trigger = page.locator('#delete-ontology');
+        await trigger.click();
+        const dialog = page.getByRole('dialog', { name: 'Подтвердить удаление' });
+        await expect(dialog).toBeInViewport();
+        await capture('ontology-delete-dialog');
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
       }
-      if (url === '/agent') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.evaluate(() => sessionStorage.setItem('agentTranscript', JSON.stringify([
-            { role: 'user', content: 'Покажи сделки' },
-            { role: 'assistant', content: '## Сделки\n\n| Название |\n| --- |\n| Пример |' },
-          ])));
-          await tab.reload();
-          await expect(tab.getByRole('cell', { name: 'Пример' })).toBeVisible();
-        }));
-        await compare('agent answer');
-      }
-      if (url === '/tools/ontology') {
-        await Promise.all(tabs.map(async (tab) => {
-          await tab.getByRole('button', { name: 'sales.ttl' }).click();
-          await expect(tab.getByRole('textbox', { name: 'Редактор Turtle' })).toHaveValue(/owl:Ontology/);
-          await tab.locator('#delete-ontology').click();
-          await expect(tab.getByRole('dialog')).toBeVisible();
-        }));
-        await compare('ontology delete dialog');
-      }
+      expect(errors).toEqual([]);
     });
   }
-});
 }

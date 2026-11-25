@@ -2,11 +2,10 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import { apiJson } from './api';
 import { readPublishedDraft, readSavedPrompts, savedPromptsKey, type SavedPrompt } from './browserStorage';
 import { copyText } from './clipboard';
-import { DashboardHeader, PageNav } from './DashboardChrome';
+import { DashboardHeader } from './DashboardChrome';
 import { ParameterFields, QueryResult, ResultSwitch, type ResultMode } from './QueryResult';
 import { asRecord, collectParameters, describeParameters, ParameterError, parseQueryResult, runQuery,
   toolsAuthorization, type QueryParameter, type QueryValues } from './queryTools';
-import { ToolsNav } from './ToolsNav';
 import { useToolsToken } from './useToolsToken';
 
 type Entry = SavedPrompt & { draftTitle?: string };
@@ -187,7 +186,6 @@ export function QueryDebuggerPage() {
 
   return <main className="shell">
     <DashboardHeader title="CRM Pulse">{null}</DashboardHeader>
-    <PageNav active="/tools/ontology"/><ToolsNav active="queries"/>
     <div id="query-tool-notice" className={notice && !notice.error ? 'error-banner query-notice-success' : 'error-banner'}
       role="status" hidden={!notice}>{notice?.message}</div>
     <section className="panel query-tool-panel" aria-labelledby="query-tool-title">

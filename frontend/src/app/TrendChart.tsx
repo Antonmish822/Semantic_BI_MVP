@@ -29,8 +29,8 @@ export function TrendChart({ id, label, empty, points, ceiling, tickLabel = form
   const hasValues = primaryValues.length + secondaryValues.length > 0;
   const max = ceiling ?? Math.max(1, ...primaryValues) * 1.08;
   const secondaryMax = Math.max(1, ...secondaryValues) * 1.08;
-  const left = secondary ? 84 : 76;
-  const right = secondary ? 816 : 882;
+  const left = 115;
+  const right = secondary ? 785 : 882;
   const x = (index: number) => left + (points.length <= 1 ? 0 : (right - left) * index / (points.length - 1));
   const y = (value: number) => 14 + 248 * (1 - value / max);
   const dateIndices = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];

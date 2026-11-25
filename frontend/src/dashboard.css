@@ -1,0 +1,350 @@
+.react-web {
+  color-scheme: dark;
+  --canvas: #181513;
+  --sidebar: #1f1a17;
+  --paper: #24201d;
+  --surface-raised: #2d2622;
+  --ink: #f4eae1;
+  --muted: #b6a69b;
+  --line: #403630;
+  --control-line: #8b786c;
+  --accent: #f4a574;
+  --accent-soft: #3a281f;
+  --focus: #edbc95;
+  --teal: #87c5a9;
+  --teal-soft: #20352c;
+  --red: #f07d83;
+  --red-soft: #40272a;
+  --amber: #f1c66e;
+  --chart-secondary: #a9acf4;
+}
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  height: 100dvh;
+  padding: 24px 14px 16px;
+  overflow-y: auto;
+  background: var(--sidebar);
+  border-inline-end: 1px solid var(--line);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-inline: 6px;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.sidebar-mark {
+  display: grid;
+  flex: 0 0 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--canvas);
+  font-size: 17px;
+}
+
+.sidebar-nav { display: grid; gap: 4px; }
+
+.sidebar-tools {
+  margin: -14px 0 0 17px;
+  padding-inline-start: 8px;
+  border-inline-start: 1px solid var(--line);
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-inline-start: 2px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.sidebar-link svg {
+  flex: 0 0 19px;
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sidebar-link:hover { background: var(--surface-raised); color: var(--ink); }
+.sidebar-link[aria-current="page"] {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.react-web .shell {
+  width: 100%;
+  min-width: 0;
+  padding: 24px clamp(16px, 2.5vw, 36px) 36px;
+  container: dashboard / inline-size;
+}
+
+.react-web .topbar {
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  padding-block-end: 17px;
+  margin-block-end: 20px;
+  border-block-end: 1px solid var(--line);
+}
+
+.react-web .brand-mark { display: none; }
+.react-web h1 { font-size: 24px; }
+.react-web .header-actions { flex-wrap: wrap; gap: 8px 12px; }
+.react-web .section-tabs { margin: 0 0 18px; gap: 9px; }
+.react-web .section-tab { min-height: 44px; }
+.react-web .section-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.analytics-header {
+  margin-block-end: 18px;
+  border-block-end: 1px solid var(--line);
+}
+
+.analytics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 10px;
+}
+
+.analytics-logout {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding-inline: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-underline-offset: 3px;
+}
+
+.analytics-logout:hover { color: var(--ink); }
+
+.analytics-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content auto;
+  grid-template-areas: "filter data refresh" "tabs tabs tabs";
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.analytics-filter {
+  grid-area: filter;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.analytics-filter .project-filter {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 44px;
+  text-overflow: ellipsis;
+}
+
+.analytics-data {
+  grid-area: data;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  justify-self: end;
+}
+
+.analytics-data .connection { white-space: normal; }
+.analytics-data .connection i { flex: 0 0 8px; }
+.analytics-data .connection.offline { color: var(--red); }
+.analytics-timestamp { color: var(--muted); font-size: 11px; }
+
+.analytics-toolbar .refresh {
+  grid-area: refresh;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.react-web .analytics-toolbar .section-tabs {
+  grid-area: tabs;
+  margin: 0;
+  border: 0;
+}
+
+@supports (reading-flow: grid-rows) {
+  .analytics-toolbar { reading-flow: grid-rows; }
+
+  @container dashboard (min-width: 780px) {
+    .analytics-toolbar {
+      grid-template-columns: minmax(max-content, 1fr) minmax(0, 280px) max-content auto;
+      grid-template-areas: "tabs filter data refresh";
+      padding-block-end: 8px;
+    }
+  }
+}
+
+@container dashboard (max-width: 519px) {
+  .analytics-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "filter refresh" "data data" "tabs tabs";
+    gap: 8px 10px;
+  }
+
+  .analytics-filter > span, .analytics-toolbar .refresh span { display: none; }
+  .analytics-data {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    justify-self: start;
+  }
+}
+
+.react-web :is(.metric-card, .panel) {
+  min-width: 0;
+  border-radius: 11px;
+  box-shadow: none;
+}
+.react-web .metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 10px;
+}
+.react-web .metric-card { min-height: 105px; padding: 14px; }
+.react-web .metric-primary { border-top-color: var(--accent); }
+.react-web .metric-value { margin-top: 9px; font-size: clamp(24px, 3vw, 34px); }
+.react-web .metric-value-text { font-size: clamp(20px, 2vw, 27px); }
+.react-web .metric-foot { margin-top: 8px; }
+.react-web :is(.metric-foot, thead th, .employee-uri, .deal-uri, .activity-uri, footer) { color: var(--muted); }
+.react-web :is(.metric-label, .metric-value, h2, .ontology-list .secondary-button) { overflow-wrap: anywhere; }
+
+.react-web .chart-gridline { stroke: var(--line); }
+.react-web .chart-axis-label { fill: var(--muted); }
+.react-web :is(.chart-axis-label, .chart-value-label) { font-size: 13px; }
+.react-web :is(.activity-distribution-bar, .response-trend-point) { fill: var(--accent); }
+.react-web .activity-distribution-bar:hover { fill: var(--focus); }
+.react-web .response-trend-line { stroke: var(--accent); }
+.react-web :is(.chart-response-axis, .employee-response-point) { fill: var(--teal); }
+.react-web :is(.chart-conversion-axis, .employee-conversion-point) { fill: var(--chart-secondary); }
+.react-web .employee-conversion-line { stroke: var(--chart-secondary); stroke-dasharray: 6 4; }
+.react-web .legend-response { background: var(--teal); }
+.react-web .legend-conversion { background: var(--chart-secondary); }
+
+.react-web :is(
+  .chat-log, .saved-prompts, .query-tool-list-panel, .query-linked-prompt, .query-parameters,
+  .query-result-view-switch, .query-result, .query-publish-panel, .published-query-card,
+  .published-query-code, .chat-body code, .chat-body pre, .assistant-history-line, .assistant-diff,
+  .query-result-table th, .chat-body th, .class-feature-table th, .query-result-table tbody tr:nth-child(even),
+  tbody tr:hover, .agent-progress-track
+) { background: var(--surface-raised); }
+
+.react-web :is(.query-result-view-button.active, .published-query-runbox, .class-stat-card, .class-relations, .assistant-result) {
+  background: var(--paper);
+  box-shadow: none;
+}
+
+.react-web :is(
+  .auth-link, .refresh, .secondary-button, .save-prompt-button, .saved-prompt-button,
+  .chat-table-download, .saved-query-select, input, select, textarea, #editor
+) { border-color: var(--control-line); }
+.react-web :is(input, select, textarea, #editor) { background: var(--surface-raised); color: var(--ink); }
+.react-web :is(
+  .auth-link, .refresh, .secondary-button, .save-prompt-button, .saved-prompt-button,
+  .chat-table-download, .saved-query-select
+):hover, .react-web .saved-query-select.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.react-web :is(.chat-message, .saved-prompt-item, tbody td, .query-result-table th, .query-result-table td) {
+  border-color: var(--line);
+}
+.react-web .chat-user { border-inline-start-color: var(--teal); }
+.react-web .chat-assistant { border-inline-start-color: var(--amber); }
+.react-web .chat-body pre code, .react-web .saved-prompt-query pre code { background: transparent; }
+.react-web :is(.saved-prompt-query pre, .assistant-state) { background: var(--teal-soft); }
+.react-web :is(.published-query-delete, .saved-prompt-button--delete) { color: var(--red); }
+.react-web .error-banner { margin: 0 0 18px; border-color: var(--red); color: var(--red); }
+.react-web .error-banner.query-notice-success { border-color: var(--teal); }
+.react-web .assistant-error { background: var(--red-soft); color: var(--red); }
+.react-web .class-relation-node { fill: var(--surface-raised); stroke: var(--control-line); }
+.react-web .is-promoted { border-color: var(--teal); box-shadow: none; }
+.react-web .is-highlighted { border-color: var(--amber); box-shadow: none; }
+.react-web .situation-item { background: var(--accent-soft); }
+.react-web .ontology-confirm-dialog { max-height: calc(100dvh - 32px); box-shadow: 0 24px 80px #0008; }
+.react-web .ontology-confirm-dialog::backdrop { background: #100e0cbb; }
+
+.react-web :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.react-web .sidebar-link:focus-visible { outline-offset: -3px; }
+
+@media (max-width: 1119px) {
+  .app-layout { grid-template-columns: 168px minmax(0, 1fr); }
+  .app-sidebar { padding-inline: 9px; }
+}
+
+@media (max-width: 767px) {
+  .app-layout { grid-template-columns: 64px minmax(0, 1fr); }
+  .app-sidebar { align-items: stretch; gap: 16px; padding: 16px 8px 10px; }
+  .sidebar-brand { justify-content: center; padding: 0; }
+  .sidebar-brand > :last-child, .sidebar-link span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .sidebar-link { justify-content: center; padding-inline: 6px; }
+  .sidebar-tools { margin: -9px 0 0; border-inline-start: 0; border-block-start: 1px solid var(--line); padding: 6px 0 0; }
+  .react-web .shell { padding-inline: 12px; }
+}
+
+@container dashboard (max-width: 900px) {
+  .react-web .ontology-admin-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container dashboard (max-width: 680px) {
+  .react-web :is(.query-tool-layout, .ontology-workspace, .assistant-layout) { grid-template-columns: minmax(0, 1fr); }
+  .react-web :is(.chart-axis-label, .chart-value-label) { font-size: 17px; }
+}
+
+@container dashboard (max-width: 420px) {
+  .react-web :is(.metric-grid, .assistant-quick-tasks, .query-parameter-fields) { grid-template-columns: minmax(0, 1fr); }
+  .react-web :is(.panel-heading, .section-heading) { flex-wrap: wrap; }
+  .react-web :is(.chat-actions, .chat-table-actions, .query-result-heading) { flex-wrap: wrap; }
+  .react-web :is(.response-trend-chart, .activity-distribution-chart) { overflow-x: auto; }
+  .react-web :is(.response-trend-svg, .activity-distribution-svg) { min-width: 500px; }
+  .react-web :is(.ontology-actions .secondary-button, .ontology-sidebar .secondary-button) { white-space: normal; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-web .agent-progress-indicator { animation: none; }
+}

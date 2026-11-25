@@ -6,18 +6,28 @@ import { ChatPage } from './app/ChatPage';
 import { QueryCatalogPage } from './app/QueryCatalogPage';
 import { QueryDebuggerPage } from './app/QueryDebuggerPage';
 import { OntologyPage } from './app/OntologyPage';
+import { PageNav } from './app/DashboardChrome';
 import '../static/styles.css';
+import './dashboard.css';
 
-const routes = new Map([
-  ['/', DealsPage], ['/index.html', DealsPage],
-  ['/leads', LeadsPage], ['/leads.html', LeadsPage],
-  ['/employees', EmployeesPage], ['/employees.html', EmployeesPage],
-  ['/agent', ChatPage], ['/agent.html', ChatPage],
-  ['/queries', QueryCatalogPage], ['/published-queries', QueryCatalogPage],
-  ['/tools/queries', QueryDebuggerPage],
-  ['/ontologies', OntologyPage], ['/ontologies.html', OntologyPage],
-  ['/tools', OntologyPage], ['/tools/ontology', OntologyPage],
-]);
+const pages = [
+  { paths: ['/', '/index.html'], section: '/', Page: DealsPage },
+  { paths: ['/leads', '/leads.html'], section: '/leads', Page: LeadsPage },
+  { paths: ['/employees', '/employees.html'], section: '/employees', Page: EmployeesPage },
+  { paths: ['/agent', '/agent.html'], section: '/agent', Page: ChatPage },
+  { paths: ['/queries', '/published-queries'], section: '/queries', Page: QueryCatalogPage },
+  { paths: ['/tools/ontology', '/tools', '/ontologies', '/ontologies.html'], section: '/tools/ontology', tool: 'ontology', Page: OntologyPage },
+  { paths: ['/tools/queries'], section: '/tools/ontology', tool: 'queries', Page: QueryDebuggerPage },
+] as const;
+const routes = new Map<string, (typeof pages)[number]>(
+  pages.flatMap(page => page.paths.map(path => [path, page] as const)),
+);
+const route = routes.get(window.location.pathname) ?? pages[0];
+const { Page, section } = route;
 
-const Page = routes.get(window.location.pathname) ?? DealsPage;
-createRoot(document.getElementById('root')!).render(<Page />);
+createRoot(document.getElementById('root')!).render(
+  <div className="app-layout">
+    <PageNav active={section} tool={'tool' in route ? route.tool : undefined}/>
+    <Page/>
+  </div>,
+);

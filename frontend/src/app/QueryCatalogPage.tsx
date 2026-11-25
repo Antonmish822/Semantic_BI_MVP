@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { apiJson } from './api';
 import { publishedDraftKey, type PublishedDraft } from './browserStorage';
 import { copyText } from './clipboard';
-import { PageNav } from './DashboardChrome';
 import { ParameterFields, QueryResult, ResultSwitch, type ResultMode } from './QueryResult';
 import { collectParameters, describeParameters, ParameterError, parseQueryResult, runQuery,
   toolsAuthorization, type QueryParameter, type QueryValues } from './queryTools';
@@ -163,7 +162,6 @@ export function QueryCatalogPage() {
         <a className="auth-link" href="/auth/logout">Выйти</a>
       </div>
     </header>
-    <PageNav active="/queries"/>
     <div id="published-query-notice" className={notice && !notice.error ? 'error-banner query-notice-success' : 'error-banner'}
       role="status" hidden={!notice}>{notice?.message}</div>
     <section className="panel published-query-panel" aria-labelledby="published-query-title">
