@@ -258,7 +258,7 @@
       const adminStatus = $('published-query-admin-status');
       adminStatus.dataset.adminEnabled = String(enabled);
       adminStatus.textContent = enabled
-        ? 'Публикация и удаление доступны администратору с ONTOLOGY_ADMIN_TOKEN.'
+        ? 'Публикация и удаление доступны пользователям с ключом администратора.'
         : 'Публикация и удаление отключены: серверу не задан ONTOLOGY_ADMIN_TOKEN.';
       render(Array.isArray(data.queries) ? data.queries : []);
     } catch (error) {
