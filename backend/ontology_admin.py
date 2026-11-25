@@ -491,6 +491,29 @@ def publish(directory: Path, slug: str, store: object, expected_sha256: str | No
         return _publish_locked(directory, slug, store, expected_sha256)
 
 
+def publish_builtin_if_missing(directory: Path, builtin_file: Path, store: object) -> bool:
+    slug = builtin_file.stem
+    with FILE_LOCK, _process_lock(directory, ".ontology-files.lock"), _process_lock(directory, ".ontology-publication.lock"):
+        path = ontology_path(directory, slug)
+        if not path.is_file():
+            return False
+        expected_sha = digest(builtin_file)
+        if digest(path) != expected_sha:
+            return False
+        url = graph_store_url(store.base_url, store.repository, ontology_uri(slug))
+        try:
+            remote_data = graph_request(url, "GET", store.username, store.password, store.timeout)
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+        else:
+            # GraphDB can return 200 with an empty Turtle graph for a missing URI.
+            if len(Graph().parse(data=remote_data, format="turtle")):
+                return False
+        _publish_locked(directory, slug, store, expected_sha)
+        return True
+
+
 def _publish_locked(directory: Path, slug: str, store: object, expected_sha256: str | None = None) -> dict[str, object]:
     backend = getattr(store, "backend")
     if backend != "graphdb":

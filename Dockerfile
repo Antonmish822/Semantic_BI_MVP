@@ -69,6 +69,7 @@ EXPOSE 8091
 CMD ["python", "backend/agent_service.py"]
 
 FROM runtime AS ontology
+COPY ontologies/*-classification.ttl /app/builtin-ontologies/
 COPY backend/services/ontology ./backend/services/ontology
 COPY backend/services/analytics ./backend/services/analytics
 COPY backend/common ./backend/common

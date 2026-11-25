@@ -28,6 +28,8 @@ CRM_MONITOR_GID="$(id -g)" CRM_MONITOR_ENV_FILE=.env.ai-agent docker compose up 
 
 Эти файлы и URI сохранены. RDF-данные сущностей остаются в собственных графах; правила онтологий хранятся отдельно.
 
+Чтобы автоматически заполнить новый репозиторий GraphDB этими правилами, установите `ONTOLOGY_AUTO_PUBLISH_BUILTINS=1` в `env_file` и выполните `docker compose up -d --no-deps --build ontology-service`. После запуска сервис проверяет четыре файла из таблицы. Если файл совпадает с версией в образе и его граф отсутствует или пуст, сервис публикует файл и проверяет результат. Графы с данными, изменённые файлы и отсутствующие файлы пропускаются. Результаты публикации и ошибки доступны в `docker compose logs ontology-service`. Настройка требует прав на запись в GraphDB и в каталог `ontologies/`.
+
 ## ИИ-помощник
 
 Помощник доступен на странице `/ontologies` при настроенном `POLZA_API_KEY`. Ключ хранится только в окружении сервера. Модель задаётся `ONTOLOGY_AI_MODEL` (значение по умолчанию `openai/gpt-6-luna`), URL API — `ONTOLOGY_AI_BASE_URL`, таймаут — `ONTOLOGY_AI_TIMEOUT`, число вызовов чтения — `ONTOLOGY_AI_MAX_TOOL_CALLS`.

@@ -93,8 +93,9 @@ class OntologyMCPTools:
     """The assistant can read ontology facts only through the ontology MCP tools."""
     NAMES = {"list_ontologies", "describe_ontology", "ontology_class_statistics"}
 
-    def __init__(self, url: str, deadline: float, evidence: list[dict[str, str]]) -> None:
+    def __init__(self, url: str, deadline: float, evidence: list[dict[str, str]], token: str = "") -> None:
         self.url, self.deadline, self.evidence = url, deadline, evidence
+        self.token = token.strip()
 
     def run(self, name: str, arguments: Any) -> dict[str, Any]:
         if name not in self.NAMES:
@@ -105,7 +106,10 @@ class OntologyMCPTools:
             raise AssistantError(504, "mcp_timeout", "Истекло время чтения контекста через MCP")
         body = json.dumps({"jsonrpc": "2.0", "id": str(time.time_ns()), "method": "tools/call",
                            "params": {"name": name, "arguments": args}}, ensure_ascii=False).encode("utf-8")
-        request = Request(self.url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = Request(self.url, data=body, headers=headers, method="POST")
         try:
             with urlopen(request, timeout=min(remaining, 40)) as response:
                 envelope = json.loads(response.read().decode("utf-8"))
@@ -253,7 +257,7 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
         {"source": "file", "reference": f"ontologies/{slug}.ttl@{version['file_sha256']}" if version["exists"] else f"ontologies/{slug}.ttl (новый файл)",
          "finding": "Сохранённая версия; SHA связан с версией запроса."},
     ]
-    tools = OntologyMCPTools(mcp_url, deadline, evidence)
+    tools = OntologyMCPTools(mcp_url, deadline, evidence, token=values.get("MCP_AUTH_TOKEN", ""))
     try:
         listed = tools.run("list_ontologies", {})
         published_items = listed.get("ontologies", [])
