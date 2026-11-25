@@ -183,7 +183,7 @@ def _handle_tool_call(name: str, arguments: dict[str, Any], request_id: str = ""
             summary=load_published_schema(store,store.graph_prefix)
             observations=load_schema_summary()
             summary["entity_properties"]=observations.get("entity_properties",{})
-            summary["entity_properties_source"]="docs/entity_properties.csv (CRM observations only; not the published ontology)"
+            summary["entity_properties_source"]="backend/resources/entity_properties.csv (CRM observations only; not the published ontology)"
         except Exception as exc:
             summary={"classes":[],"properties":[],"object_properties":[],"datatype_properties":[],
                      "published_ontologies":[],"ontology_schemas":[],"schema_truncated":True,

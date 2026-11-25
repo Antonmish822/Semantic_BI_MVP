@@ -6,10 +6,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 from rdflib import Graph, URIRef, BNode, Literal
 from rdflib.namespace import RDF, OWL, RDFS
-from ontology import describe_ontology, list_published_ontologies
 
-ROOT = Path(__file__).resolve().parents[1]
-DOCS = ROOT / "docs"
+from common.paths import RESOURCES_DIR
+from ontology import describe_ontology, list_published_ontologies
 
 
 def _parse_ontology_classes(ontology_path: Path) -> list[str]:
@@ -54,11 +53,11 @@ def _parse_entity_properties(csv_path: Path) -> dict[str, list[str]]:
 
 
 def load_schema_summary() -> dict[str, object]:
-    ontology_path = DOCS / "ontology.ttl"
+    ontology_path = RESOURCES_DIR / "ontology.ttl"
     classes = _parse_ontology_classes(ontology_path)
     object_properties = _parse_properties(ontology_path, "ObjectProperty")
     datatype_properties = _parse_properties(ontology_path, "DatatypeProperty")
-    entity_properties = _parse_entity_properties(DOCS / "entity_properties.csv")
+    entity_properties = _parse_entity_properties(RESOURCES_DIR / "entity_properties.csv")
     return {
         "prefixes": {
             "b24": "https://example.org/bitrix24#",

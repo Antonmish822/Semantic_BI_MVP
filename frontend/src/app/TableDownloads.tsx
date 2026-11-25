@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useRef } from 'react';
-import xlsxUrl from '../../../static/vendor/xlsx.full.min.js?url';
+import xlsxUrl from '../../static/vendor/xlsx.full.min.js?url';
 
 type SheetJs = {
   utils: { table_to_book: (table: HTMLTableElement, options: { sheet: string }) => unknown };

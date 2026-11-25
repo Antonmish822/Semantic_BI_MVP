@@ -11,11 +11,11 @@ MCP-сервер принимает JSON-RPC на `/mcp`. Инструмент `
 4. Отдельный транспорт ограничивает deadline, таймаут GraphDB, размер ответа, число строк, параллельность и состав результата.
 
 Ключевые модули:
-- [`mcp/mcp_server.py`](mcp/mcp_server.py) — HTTP JSON-RPC сервер.
-- [`mcp/safe_sparql.py`](mcp/safe_sparql.py) — ограниченный разбор, политика, построение нового запроса, изолированный транспорт и фильтр результата.
-- [`mcp/mcp_security.py`](mcp/mcp_security.py) — прежняя общая проверка; динамический MCP SELECT больше её не использует.
-- [`mcp/mcp_queries.py`](mcp/mcp_queries.py) — именованные запросы и шаблоны.
-- [`mcp/mcp_schema.py`](mcp/mcp_schema.py) — описание схемы/онтологии для инструмента `explain_schema`.
+- [`backend/mcp/mcp_server.py`](backend/mcp/mcp_server.py) — HTTP JSON-RPC сервер.
+- [`backend/mcp/safe_sparql.py`](backend/mcp/safe_sparql.py) — ограниченный разбор, политика, построение нового запроса, изолированный транспорт и фильтр результата.
+- [`backend/mcp/mcp_security.py`](backend/mcp/mcp_security.py) — прежняя общая проверка; динамический MCP SELECT больше её не использует.
+- [`backend/mcp/mcp_queries.py`](backend/mcp/mcp_queries.py) — именованные запросы и шаблоны.
+- [`backend/mcp/mcp_schema.py`](backend/mcp/mcp_schema.py) — описание схемы/онтологии для инструмента `explain_schema`.
 
 ## Инструменты MCP
 
@@ -47,7 +47,7 @@ MCP-сервер принимает JSON-RPC на `/mcp`. Инструмент `
 
 Для аналитической проекции создайте отдельный GraphDB repository. Настройте GraphDB query timeout, read-only пользователя только с `READ_REPO_<имя_репозитория>`, отдельные `MCP_SAFE_SPARQL_*`, свежую policy с точными URI и `MCP_AUTH_TOKEN`. Включите `MCP_ENABLE_SAFE_SPARQL=1` на MCP и `AGENT_ALLOW_SPARQL=1` на агенте. Полный справочник параметров и режимов — в [документации конфигурации](docs/CONFIGURATION.md), шаблон — в [`.env.example`](.env.example). Быстрый откат — установить оба флага в `0`; прямой `tools/call` ответит `disabled`. Не переносите синтетическую policy или конфигурацию на реальные данные.
 
-Каталог MCP синхронизируется с коллекцией `queries/*.rq`. Запросы с пометкой `# @mcp-query` появляются в `list_queries`. Имя берётся из имени файла без `.rq`, описание — из комментариев начиная с `# @mcp-description:`, параметры — из плейсхолдеров шаблона.
+Каталог MCP синхронизируется с коллекцией `backend/queries/*.rq`. Запросы с пометкой `# @mcp-query` появляются в `list_queries`. Имя берётся из имени файла без `.rq`, описание — из комментариев начиная с `# @mcp-description:`, параметры — из плейсхолдеров шаблона.
 
 ## Подключение из MCP‑клиентов (Zoo Code / Roo)
 
@@ -64,7 +64,7 @@ MCP-сервер принимает JSON-RPC на `/mcp`. Инструмент `
 ```powershell
 $env:MCP_HOST = "127.0.0.1"
 $env:MCP_PORT = "8090"
-python -m mcp.mcp_server
+uv run --directory backend --locked python -m mcp.mcp_server
 ```
 
 Проверка:
@@ -100,10 +100,10 @@ docker compose -f compose.yaml -f compose.debug.yaml up -d --build mcp-graphdb
 GraphDB выбирается конфигурацией именно запущенного MCP-сервера:
 
 ```bash
-python -m mcp.profile_graphdb \
+uv run --directory backend --locked python -m mcp.profile_graphdb \
   --url http://127.0.0.1:8091/mcp \
   --warmup 3 --repeats 50 --pause 0.5 --timeout 90 --seed 42 \
-  --output logs/graphdb-benchmark-next.json
+  --output ../logs/graphdb-benchmark-next.json
 ```
 
 Без `--template` инструмент берёт все шаблоны из актуального `list_queries`.

@@ -98,13 +98,13 @@ class OntologyAdminChecks(unittest.TestCase):
             self.assertEqual(request.call_args_list[1].args[1], "GET")
 
     def test_existing_pages_and_routes_are_preserved(self):
-        project = Path(__file__).parents[1]
+        static = Path(__file__).resolve().parents[2] / "frontend" / "static"
         for name in ("index.html", "leads.html", "employees.html"):
-            html = (project / "static" / name).read_text(encoding="utf-8")
+            html = (static / name).read_text(encoding="utf-8")
             self.assertIn('href="/tools/ontology"', html)
         for name, script in (("index.html", "/app.js"), ("leads.html", "/leads.js"),
                              ("employees.html", "/employees.js")):
-            self.assertIn(f'src="{script}"', (project / "static" / name).read_text(encoding="utf-8"))
+            self.assertIn(f'src="{script}"', (static / name).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

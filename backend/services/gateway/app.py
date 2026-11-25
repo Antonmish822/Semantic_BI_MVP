@@ -10,8 +10,10 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-ROOT = Path(__file__).resolve().parents[2]
-STATIC = Path(os.environ.get("WEB_STATIC_DIR", str(ROOT / "static")))
+from common.paths import WEB_STATIC_DIR
+
+
+STATIC = Path(os.environ.get("WEB_STATIC_DIR", str(WEB_STATIC_DIR)))
 app = FastAPI(title="Semantic BI Gateway", docs_url=None, redoc_url=None)
 
 # Keep these external URL groups stable during staged service and UI migrations.

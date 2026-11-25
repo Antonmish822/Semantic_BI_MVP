@@ -6,9 +6,9 @@
 
 Перенести отрисовку, состояние и обработку действий всех семи страниц в React. Сохранить вёрстку, стили, тексты, графики, пользовательские сценарии, URL и данные, которые уже хранятся в браузере. React обращается к существующим API через Gateway. Смена API, маршрутизации микросервисов и серверных вычислений выходит за рамки этого плана.
 
-Сейчас React строит интерфейс из HTML в `static/`, после чего [загрузчик](../web/src/app/pages.ts) запускает legacy-скрипты. [Текущий набор Playwright](../web/e2e/app.spec.ts) включает девять сценариев, в том числе сравнение скриншотов семи страниц после загрузки на одинаковых данных. Для миграции нужен отдельный эталон состояний после действий пользователя.
+Сейчас React строит интерфейс из HTML в `static/`, после чего [загрузчик](../web/src/app/pages.ts) запускает legacy-скрипты. [Текущий набор Playwright](../frontend/e2e/app.spec.ts) включает девять сценариев, в том числе сравнение скриншотов семи страниц после загрузки на одинаковых данных. Для миграции нужен отдельный эталон состояний после действий пользователя.
 
-Переносить по одной странице. Для готовой страницы React владеет всем её DOM и состоянием. Страницы, которые ещё переносятся, загружаются через действующий адаптер. Обычные ссылки, прямое открытие URL и история браузера сохраняются. При переносе разметки в JSX использовать текущий `static/styles.css`, CSS-классы, порядок элементов и доступные названия элементов управления.
+Переносить по одной странице. Для готовой страницы React владеет всем её DOM и состоянием. Страницы, которые ещё переносятся, загружаются через действующий адаптер. Обычные ссылки, прямое открытие URL и история браузера сохраняются. При переносе разметки в JSX использовать текущий `frontend/static/styles.css`, CSS-классы, порядок элементов и доступные названия элементов управления.
 
 ## Этапы реализации
 
@@ -95,20 +95,20 @@
 Доступные команды из корня проекта:
 
 ```bash
-npm --prefix web ci
-npm --prefix web run build
-npm --prefix web run test:unit
-npm --prefix web run test:components
-npm --prefix web run test:e2e
-uv run --locked python -m unittest discover -s tests -v
+npm --prefix frontend ci
+npm --prefix frontend run build
+npm --prefix frontend run test:unit
+npm --prefix frontend run test:components
+npm --prefix frontend run test:e2e
+uv run --directory backend --locked python -m unittest discover -s tests -v
 python tests/compose/react_smoke.py
 ```
 
-В Windows команда `python tests/compose/react_smoke.py --contracts` выполняет Python-тесты в Linux, где доступен `fcntl`. Связанные тесты — [Playwright](../web/e2e/app.spec.ts), [Gateway](../tests/test_gateway_service.py) и [маршруты legacy](../tests/contracts/test_legacy_routes.py).
+В Windows команда `python tests/compose/react_smoke.py --contracts` выполняет Python-тесты в Linux, где доступен `fcntl`. Связанные тесты — [Playwright](../frontend/e2e/app.spec.ts), [Gateway](../backend/tests/test_gateway_service.py) и [маршруты legacy](../backend/tests/contracts/test_legacy_routes.py).
 
 ### Воспроизведение эталона
 
-Playwright использует один браузер Chromium для React и legacy, одинаковые ответы из `mockApi`, время 25 ноября 2026 года, 12:00 по Москве, ширины 1440, 768 и 390 px и высоту 900 px. Обе версии используют системный стек шрифтов из `static/styles.css`. На Windows для прогона с установленным Edge можно задать `PLAYWRIGHT_CHANNEL=msedge`. Снимки первых экранов и состояний после действий сохраняются раздельно в `web/test-results/`. При расхождении в отчёт прикладывается разностное изображение.
+Playwright использует один браузер Chromium для React и legacy, одинаковые ответы из `mockApi`, время 25 ноября 2026 года, 12:00 по Москве, ширины 1440, 768 и 390 px и высоту 900 px. Обе версии используют системный стек шрифтов из `frontend/static/styles.css`. На Windows для прогона с установленным Edge можно задать `PLAYWRIGHT_CHANNEL=msedge`. Снимки первых экранов и состояний после действий сохраняются раздельно в `frontend/test-results/`. При расхождении в отчёт прикладывается разностное изображение.
 
 | Действие | Запросы |
 | --- | --- |

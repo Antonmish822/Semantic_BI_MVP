@@ -8,15 +8,13 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 
+from common.paths import BACKEND_DIR, RESOURCES_DIR
 from common.query_templates import load_query, sparql_literal
 from common.rdf_transport import RDFSelectTransport, create_rdf_transport
 
-ROOT = Path(__file__).resolve().parents[2]
-DOCS = ROOT / "docs"
-RULES = ROOT / "rules"
+RULES = BACKEND_DIR / "rules"
 
 CACHE_SECONDS = 30
 CACHE: dict[str, object] = {
@@ -775,8 +773,8 @@ def normalize_feature_uri(uri: str) -> str:
 
 
 def load_ontology_profile() -> dict[str, object]:
-    ttl_path = DOCS / "ontology.ttl"
-    features_path = DOCS / "доступные_признаки_сущностей.csv"
+    ttl_path = RESOURCES_DIR / "ontology.ttl"
+    features_path = RESOURCES_DIR / "доступные_признаки_сущностей.csv"
     ttl_text = ttl_path.read_text(encoding="utf-8") if ttl_path.is_file() else ""
     entities = sorted(set(re.findall(r"^\s*:(\w+)\s+a\s+owl:Class", ttl_text, flags=re.MULTILINE)))
     ttl_features = sorted(set(re.findall(r"^\s*:(\w+)\s+a\s+owl:DatatypeProperty", ttl_text, flags=re.MULTILINE)))

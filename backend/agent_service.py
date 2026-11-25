@@ -23,11 +23,13 @@ from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
+
+from common.paths import PROJECT_DIR
 from mcp.safe_sparql import SYNTHETIC_MODE, synthetic_repository_enabled, validate_synthetic_result
 from query_library import QueryLibraryError, delete_published_query, list_published_queries, publish_query
 
-ROOT = Path(__file__).resolve().parent
-SPARQL_SKILL_PATH = ROOT / ".agents" / "skills" / "bitrix24-graphdb-sparql" / "SKILL.md"
+
+SPARQL_SKILL_PATH = PROJECT_DIR / ".agents" / "skills" / "bitrix24-graphdb-sparql" / "SKILL.md"
 
 PROFILE_LOCK = threading.Lock()
 PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
@@ -39,7 +41,7 @@ AGENT_SESSIONS_LOCK = threading.RLock()
 
 
 def load_env() -> None:
-    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", ROOT / ".env"))
+    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", PROJECT_DIR / ".env"))
     if not path.is_file():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -61,7 +63,7 @@ def set_agent_progress(request_id: str, stage: str, message: str) -> None:
 
 
 def open_profile_log(component: str):
-    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or ROOT / "logs")
+    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or PROJECT_DIR / "logs")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{component}-profile.jsonl"
     return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))
@@ -896,8 +898,8 @@ async def health() -> dict[str, str]:
 
 def _published_query_dir() -> Path:
     configured = os.environ.get("PUBLISHED_QUERY_DIR", "").strip()
-    path = Path(configured) if configured else ROOT / "published_queries"
-    return path if path.is_absolute() else ROOT / path
+    path = Path(configured) if configured else PROJECT_DIR / "published_queries"
+    return path if path.is_absolute() else PROJECT_DIR / path
 
 
 def _query_admin_token(supplied: str) -> bool:

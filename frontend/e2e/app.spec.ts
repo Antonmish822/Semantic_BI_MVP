@@ -518,7 +518,7 @@ test(`React and legacy render the same pages at ${width}px`, async ({ context, p
     ['/tools/ontology', 'ontologies.html', 'sales.ttl'],
   ];
   const filenames = new Map(pages.map(([url, filename]) => [url, filename]));
-  const staticPath = (name: string) => fileURLToPath(new URL(`../../static/${name}`, import.meta.url));
+  const staticPath = (name: string) => fileURLToPath(new URL(`../static/${name}`, import.meta.url));
   await legacy.route('**/*', async (route) => {
     const path = new URL(route.request().url()).pathname;
     const filename = filenames.get(path)

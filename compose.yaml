@@ -203,7 +203,7 @@ services:
       YANDEX_TOKEN_URL: ""
       YANDEX_PROFILE_URL: ""
       AUTH_INTERNAL_SECRET: ""
-    command: ["python", "agent_service.py"]
+    command: ["python", "backend/agent_service.py"]
     depends_on:
       - mcp-graphdb
     extra_hosts:

@@ -6,7 +6,7 @@ import { ChatPage } from './app/ChatPage';
 import { QueryCatalogPage } from './app/QueryCatalogPage';
 import { QueryDebuggerPage } from './app/QueryDebuggerPage';
 import { OntologyPage } from './app/OntologyPage';
-import '../../static/styles.css';
+import '../static/styles.css';
 
 const routes = new Map([
   ['/', DealsPage], ['/index.html', DealsPage],

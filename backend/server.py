@@ -22,7 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-
+from common.paths import ONTOLOGIES_DIR, PROJECT_DIR, WEB_STATIC_DIR
 from services.analytics.domain import (
     GRAPH_QUERY_EXCEPTIONS, RDFStoreClient, average, build_view_state, cache_fallback_enabled,
     create_store_client, default_block_order, employee_label, get_categories,
@@ -41,16 +41,13 @@ from ontology import class_statistics
 from query_library import (QueryLibraryError, delete_published_query,
                            list_published_queries, publish_query)
 
-ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / "static"
-DOCS = ROOT / "docs"
-RULES = ROOT / "rules"
+STATIC = WEB_STATIC_DIR
 
 
 def published_query_directory() -> Path:
     configured = os.environ.get("PUBLISHED_QUERY_DIR", "").strip()
-    path = Path(configured) if configured else ROOT / "published_queries"
-    return path if path.is_absolute() else ROOT / path
+    path = Path(configured) if configured else PROJECT_DIR / "published_queries"
+    return path if path.is_absolute() else PROJECT_DIR / path
 
 
 def ontology_service_url() -> str:
@@ -524,7 +521,7 @@ def _render_auth_error(message: str) -> bytes:
 
 
 def load_env() -> None:
-    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", ROOT / ".env"))
+    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", PROJECT_DIR / ".env"))
     if not path.is_file():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -563,7 +560,7 @@ def set_agent_progress(request_id: str, stage: str, message: str) -> None:
 
 
 def open_profile_log(component: str):
-    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or ROOT / "logs")
+    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or PROJECT_DIR / "logs")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{component}-profile.jsonl"
     return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))
@@ -823,18 +820,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._send_json(502, {"error": "Не удалось сверить состояние опубликованной схемы", "published_status": "unavailable"})
         elif path == "/api/ontologies":
-            list_quarantine(ROOT / "ontologies")
-            self._send_json(200, {"ontologies": list_ontologies(ROOT / "ontologies"),
+            list_quarantine(ONTOLOGIES_DIR)
+            self._send_json(200, {"ontologies": list_ontologies(ONTOLOGIES_DIR),
                                   "admin_enabled": bool(os.environ.get("ONTOLOGY_ADMIN_TOKEN"))})
         elif path == "/api/ontologies/quarantine":
-            self._send_json(200, {"items": list_quarantine(ROOT / "ontologies")})
+            self._send_json(200, {"items": list_quarantine(ONTOLOGIES_DIR)})
         elif path.startswith("/api/ontologies/") and path.count("/") == 3 and path != "/api/ontologies/validate":
             slug = path.rsplit("/", 1)[-1]
             try:
-                text, sha = read_ontology(ROOT / "ontologies", slug)
+                text, sha = read_ontology(ONTOLOGIES_DIR, slug)
                 payload = {"slug": slug, "filename": slug + ".ttl", "uri": ontology_uri(slug),
                            "text": text, "sha256": sha, "publication_status": "unknown",
-                           "publication_history": publication_history(ROOT / "ontologies", slug)}
+                           "publication_history": publication_history(ONTOLOGIES_DIR, slug)}
                 try:
                     store = create_store_client()
                     if store.backend == "graphdb":
@@ -1309,42 +1306,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/ontologies" and method == "POST":
                 slug = payload.get("slug")
-                sha = save_text(ROOT / "ontologies", slug, payload.get("text"), None, create=True)
+                sha = save_text(ONTOLOGIES_DIR, slug, payload.get("text"), None, create=True)
                 self._send_json(201, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
                                       "published": False})
                 return
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "delete-preview" and method == "POST":
-                self._send_json(200, ontology_delete_preview(ROOT / "ontologies", parts[2], create_store_client()))
+                self._send_json(200, ontology_delete_preview(ONTOLOGIES_DIR, parts[2], create_store_client()))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "delete" and method == "POST":
                 expected={key:payload.get(key) for key in ("file_sha256","graph_present","graph_fingerprint","revision_fingerprint")}
                 if not expected["file_sha256"] or not isinstance(expected["graph_present"],bool):
                     raise OntologyError(400,"Передайте снимок предпросмотра удаления")
-                self._send_json(200,delete_ontology(ROOT / "ontologies",parts[2],create_store_client(),expected))
+                self._send_json(200,delete_ontology(ONTOLOGIES_DIR,parts[2],create_store_client(),expected))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "restore" and method == "POST":
-                self._send_json(200,restore_quarantined(ROOT / "ontologies",str(payload.get("operation_id", "")),create_store_client()))
+                self._send_json(200,restore_quarantined(ONTOLOGIES_DIR,str(payload.get("operation_id", "")),create_store_client()))
                 return
             if len(parts) == 3 and parts[:2] == ["api", "ontologies"] and method == "PUT":
                 slug = parts[2]
-                sha = save_text(ROOT / "ontologies", slug, payload.get("text"),
+                sha = save_text(ONTOLOGIES_DIR, slug, payload.get("text"),
                                 payload.get("expected_sha256"))
                 self._send_json(200, {"slug": slug, "uri": ontology_uri(slug), "sha256": sha,
                                       "published": False})
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "publish" and method == "POST":
-                self._send_json(200, publish(ROOT / "ontologies", parts[2], create_store_client(), payload.get("expected_sha256")))
+                self._send_json(200, publish(ONTOLOGIES_DIR, parts[2], create_store_client(), payload.get("expected_sha256")))
                 return
             if len(parts) == 4 and parts[:2] == ["api", "ontologies"] and parts[3] == "rollback" and method == "POST":
-                history = [row for row in publication_history(ROOT / "ontologies", parts[2]) if row.get("status") == "confirmed"]
+                history = [row for row in publication_history(ONTOLOGIES_DIR, parts[2]) if row.get("status") == "confirmed"]
                 current_sha = history[-1].get("sha256") if history else None
                 previous = next((row for row in reversed(history[:-1]) if row.get("sha256") != current_sha), None)
                 if previous is None:
                     raise OntologyError(409, "Нет предыдущей подтверждённой ревизии для отката")
                 previous_sha = str(previous.get("sha256"))
-                result = publish(ROOT / "ontologies", parts[2], create_store_client(), previous_sha)
-                result["text"] = read_revision(ROOT / "ontologies", parts[2], previous_sha)
+                result = publish(ONTOLOGIES_DIR, parts[2], create_store_client(), previous_sha)
+                result["text"] = read_revision(ONTOLOGIES_DIR, parts[2], previous_sha)
                 self._send_json(200, result)
                 return
             self._send_json(404, {"error": "Неизвестная операция управления онтологиями"})
@@ -1434,7 +1431,7 @@ def main() -> None:
     def expire_quarantine() -> None:
         while not quarantine_stop.is_set():
             try:
-                removed=purge_expired_quarantine(ROOT / "ontologies")
+                removed=purge_expired_quarantine(ONTOLOGIES_DIR)
                 if removed: print(f"Expired ontology quarantine entries purged: {len(removed)}")
             except Exception as exc:
                 print(f"Ontology quarantine cleanup failed ({type(exc).__name__})")

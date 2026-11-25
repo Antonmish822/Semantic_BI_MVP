@@ -11,14 +11,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 
+from .paths import PROJECT_DIR
+
 
 PROFILE_LOCK = threading.Lock()
 PROFILE_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 def load_env() -> None:
-    root = Path(__file__).resolve().parent.parent
-    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", root / ".env"))
+    path = Path(os.environ.get("CRM_MONITOR_ENV_FILE", PROJECT_DIR / ".env"))
     if not path.is_file():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -33,8 +34,7 @@ def load_env() -> None:
 
 
 def open_profile_log(component: str):
-    root = Path(__file__).resolve().parent.parent
-    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or root / "logs")
+    directory = Path(os.environ.get("AGENT_PROFILE_LOG_DIR") or PROJECT_DIR / "logs")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{component}-profile.jsonl"
     return open(path, "a", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o600))

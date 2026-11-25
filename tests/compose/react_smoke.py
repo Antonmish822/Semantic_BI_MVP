@@ -23,16 +23,15 @@ PAGES = (
 def run_contracts():
     """Use the image's Linux runtime when the host lacks fcntl."""
     root = CONFIG.resolve().parents[2]
-    paths = (
-        "tests", "services", "static", "common", "mcp", "ontologies", "ontology",
-        "queries", "rules", "docs", ".agents", "server.py", "query_library.py",
-        "agent_service.py", "ontology_admin.py", "ontology_assistant.py",
-    )
+    paths = ("backend", "frontend/static", "ontologies", ".agents/skills/bitrix24-graphdb-sparql")
     mounts = []
     for name in paths:
         mounts.extend(("--mount", f"type=bind,source={root / name},target=/workspace/{name},readonly"))
     subprocess.run([
-        "docker", "run", "--rm", "--network", "none", "-w", "/workspace", *mounts,
+        "docker", "run", "--rm", "--network", "none", "-w", "/workspace/backend",
+        "-e", "PYTHONPATH=/workspace/backend", "-e", "WEB_STATIC_DIR=/app/frontend/static",
+        "-e", "AGENT_PROFILE_LOG_DIR=/tmp/crm-test-logs",
+        *mounts,
         "crm-pulse-react-smoke:local", "python", "-m", "unittest", "discover", "-s", "tests", "-v",
     ], check=True)
 

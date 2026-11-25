@@ -7,7 +7,6 @@ import json
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 from rdflib import OWL, RDFS, URIRef
@@ -15,9 +14,10 @@ from rdflib.compare import to_canonical_graph
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from common.paths import ONTOLOGIES_DIR
 from ontology_admin import MAX_TTL_BYTES, OntologyError, ontology_uri, parse_ttl, read_ontology
 
-ROOT = Path(__file__).resolve().parent
+
 MAX_ASSISTANT_BODY = 640 * 1024
 MAX_HISTORY_CHARS = 48_000
 MAX_MESSAGE_CHARS = 8_000
@@ -77,7 +77,7 @@ def assistant_config(env: dict[str, str] | None = None) -> dict[str, Any]:
 def version_for(slug: str) -> dict[str, Any]:
     uri = ontology_uri(slug)
     try:
-        text, sha = read_ontology(ROOT / "ontologies", slug)
+        text, sha = read_ontology(ONTOLOGIES_DIR, slug)
         return {"slug": slug, "exists": True, "file_sha256": sha, "uri": uri}
     except OntologyError as exc:
         if exc.status == 404:
@@ -225,7 +225,7 @@ def suggest(payload: dict[str, Any], env: dict[str, str] | None = None,
     if given_editor_sha and given_editor_sha != editor_sha:
         raise AssistantError(409, "editor_conflict", "Текст редактора изменился; отправьте запрос повторно")
     try:
-        saved_text, saved_sha = read_ontology(ROOT / "ontologies", slug)
+        saved_text, saved_sha = read_ontology(ONTOLOGIES_DIR, slug)
         version = {"slug": slug, "exists": True, "file_sha256": saved_sha, "uri": uri}
     except OntologyError as exc:
         if exc.status != 404:

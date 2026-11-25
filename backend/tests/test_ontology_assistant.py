@@ -82,7 +82,7 @@ class OntologyAssistantChecks(unittest.TestCase):
         env = {"POLZA_API_KEY": "test-key", "ONTOLOGY_AI_MODEL": "openai/gpt-6-luna", "ONTOLOGY_AI_TIMEOUT": "15"}
         payload = {"slug": slug, "editor_text": editor, "editor_sha256": hashlib.sha256(editor.encode()).hexdigest(),
                    "file_sha256": None, "message": "создай шаблон", "history": []}
-        ontologies = Path(__file__).parents[1] / "ontologies"
+        ontologies = Path(__file__).resolve().parents[2] / "ontologies"
         before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in ontologies.glob("*.ttl")}
         result = assistant.suggest(payload, env, FakeClient)
         after = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in ontologies.glob("*.ttl")}
@@ -96,7 +96,7 @@ class OntologyAssistantChecks(unittest.TestCase):
 
     def test_stale_file_sha_is_rejected_before_provider_call(self):
         slug = "lead-classification"
-        text = (Path(__file__).parents[1] / "ontologies" / f"{slug}.ttl").read_text()
+        text = (Path(__file__).resolve().parents[2] / "ontologies" / f"{slug}.ttl").read_text()
         payload = {"slug": slug, "editor_text": text, "editor_sha256": hashlib.sha256(text.encode()).hexdigest(),
                    "file_sha256": "0" * 64, "message": "check"}
         with self.assertRaises(assistant.AssistantError) as error:
@@ -115,7 +115,7 @@ class OntologyAssistantChecks(unittest.TestCase):
 
     def test_unsaved_editor_text_is_sent_separately_from_saved_sha(self):
         slug = "lead-classification"
-        path = Path(__file__).parents[1] / "ontologies" / f"{slug}.ttl"
+        path = Path(__file__).resolve().parents[2] / "ontologies" / f"{slug}.ttl"
         saved_bytes = path.read_bytes()
         saved = saved_bytes.decode("utf-8")
         editor = saved + "\n# unsaved editor-only note\n"

@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from rdflib import Graph
 
+from common.paths import ONTOLOGIES_DIR
 from ontology_admin import (
     MAX_TTL_BYTES, OntologyError, delete_ontology, graph_request, graph_store_url,
     list_ontologies, list_quarantine, ontology_delete_preview, ontology_uri,
@@ -30,7 +31,7 @@ from ontology import class_statistics, published_context
 from services.analytics.domain import create_store_client
 
 app = FastAPI(title="Semantic BI Ontology", docs_url=None, redoc_url=None)
-ONTOLOGY_DIR = Path(os.environ.get("ONTOLOGY_DIR", "/app/ontologies"))
+ONTOLOGY_DIR = Path(os.environ.get("ONTOLOGY_DIR", str(ONTOLOGIES_DIR)))
 PURGE_STOP = threading.Event()
 PURGE_THREAD: threading.Thread | None = None
 

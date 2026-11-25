@@ -60,19 +60,18 @@ cp .env.example .env
 - для Yandex ID укажите `AUTH_ENABLED=1`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и (опционально) `AUTH_ALLOWED_DOMAINS`.
 - задайте `ONTOLOGY_ADMIN_TOKEN`, чтобы разрешить административные операции с онтологиями и инструментами, включая публикацию запросов; `POLZA_API_KEY` нужен для помощника онтологий и AI-agent.
 
-Установите зависимости и запустите сервисы в отдельных терминалах:
+Выполняйте команды из корня репозитория. Запустите сервисы в отдельных терминалах:
 
 ```bash
-uv sync --locked
-python -m mcp.mcp_server
+uv run --directory backend --locked python -m mcp.mcp_server
 ```
 
 ```bash
-python agent_service.py
+uv run --directory backend --locked python agent_service.py
 ```
 
 ```bash
-python server.py
+uv run --directory backend --locked python server.py
 ```
 
 Откройте адрес из `DASHBOARD_HOST` и `DASHBOARD_PORT` (по примеру `.env.example`: <http://127.0.0.1:8085>).
@@ -129,16 +128,24 @@ HTTP API доступен по `POST /api/agent`, `/api/agent/profile`, `/api/ag
 
 ## Структура
 
-- `server.py` — HTTP API, конфигурация GraphDB/Fuseki и расчёт показателей, плюс proxy на `/api/agent`;
-- `agent_service.py` — HTTP API агента (FastAPI) и логика Polza.ai + MCP;
-- `ontology_admin.py` — безопасное сохранение TTL и публикация через Graph Store Protocol;
-- `ontology_assistant.py` — контекст и read-only инструменты помощника онтологий;
-- `query_library.py` — атомарное файловое хранилище общего каталога опубликованных SPARQL-шаблонов;
-- `ontologies/` — Turtle-аксиомы, доступные для редактирования на странице `/ontologies`;
-- `queries/` — SPARQL-запросы для сделок, лидов, активностей, сотрудников и справочников;
-- `static/index.html`, `static/leads.html`, `static/employees.html`, `static/agent.html`, `static/published_queries.html` — страницы интерфейса;
-- `static/*.js` и `static/styles.css` — клиентская логика и стили;
-- `docs/` — справочные материалы о доступных RDF-признаках и онтологии.
+- `frontend/src/` — React и TypeScript. В `frontend/static/` находятся HTML и JS прежнего интерфейса, общий CSS и SheetJS. Vite собирает React в `frontend/static/react/`.
+- `backend/services/` — Gateway, Auth, Analytics и Ontology. `backend/agent_service.py` и `backend/mcp/` — Agent и MCP. `backend/server.py` — совместимый локальный dashboard.
+- `backend/queries/`, `backend/rules/` и `backend/resources/` — шаблоны SPARQL, правила аналитики, справочные TTL и CSV.
+- `backend/tests/`, `frontend/unit/` и `frontend/e2e/` — проверки Python и браузера. `tests/compose/` — сквозная проверка образа Gateway.
+- `ontologies/` — редактируемые TTL и состояние публикаций. Docker Compose, `.env`, локальные `published_queries/` и `logs/` расположены в корне.
+
+Команды сборки React и запуска тестов из корня репозитория приведены ниже.
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+npm --prefix frontend run test:unit
+npm --prefix frontend exec -- playwright install chromium
+npm --prefix frontend run test:e2e
+uv run --directory backend --locked python -m unittest discover -s tests -v
+```
+
+В Windows выполните Python-тесты в Linux-контейнере командой `python tests/compose/react_smoke.py --contracts`.
 
 ## Управление онтологиями
 
