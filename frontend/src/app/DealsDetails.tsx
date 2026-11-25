@@ -1,3 +1,5 @@
+import { SegmentedBars } from './SegmentedBars';
+import { useChartWidth } from './useChartWidth';
 import { Fragment } from 'react';
 import type { ActivityDistribution, RecentActivity, RedDeal } from './api';
 
@@ -53,37 +55,51 @@ export function ActivityRow({ activity }: { activity: RecentActivity }) {
   </tr>;
 }
 
-export function DistributionChart({ buckets }: { buckets: NonNullable<ActivityDistribution['buckets']> }) {
-  const width = 900;
-  const height = 300;
-  const left = 48;
-  const right = 18;
+export function DistributionChart({ buckets, hidden }: {
+  buckets: NonNullable<ActivityDistribution['buckets']>; hidden: boolean;
+}) {
+  const { chartRef, width, compact } = useChartWidth();
+  const height = compact ? 210 : 275;
+  const left = compact ? 36 : 65;
+  const right = compact ? 12 : 18;
   const top = 20;
   const plotHeight = height - top - 56;
   const max = Math.max(1, ...buckets.map((bucket) => Number(bucket.deal_count || 0)));
-  const slot = (width - left - right) / buckets.length;
-  const barWidth = Math.min(68, slot * 0.66);
-  return <svg viewBox={`0 0 ${width} ${height}`} role="presentation" className="activity-distribution-svg">
-    {[0, 1, 2, 3, 4].map((tick) => {
-      const y = top + plotHeight * (1 - tick / 4);
-      return <Fragment key={tick}>
-        <line x1={left} x2={width - right} y1={y} y2={y} className="chart-gridline"/>
-        <text x={left - 9} y={y + 4} className="chart-axis-label" textAnchor="end">{formatNumber(Math.round(max * tick / 4))}</text>
-      </Fragment>;
-    })}
-    {buckets.map((bucket, index) => {
-      const count = Number(bucket.deal_count || 0);
-      const barHeight = plotHeight * count / max;
-      const x = left + slot * index + (slot - barWidth) / 2;
-      const y = top + plotHeight - barHeight;
-      return <Fragment key={bucket.key}>
-        <rect x={x} y={y} width={barWidth} height={barHeight} rx={5} className="activity-distribution-bar">
-          <title>{bucket.label}: {formatNumber(count)} сделок</title>
-        </rect>
-        <text x={x + barWidth / 2} y={Math.max(top - 4, y - 7)} className="chart-value-label" textAnchor="middle">{formatNumber(count)}</text>
-        <text x={left + slot * index + slot / 2} y={height - 27} className="chart-axis-label" textAnchor="middle">{bucket.label.replace(' дней', '')}</text>
-      </Fragment>;
-    })}
-    <text x={width / 2} y={height - 7} className="chart-axis-label" textAnchor="middle">Давность последней активности</text>
-  </svg>;
+  const slot = (width - left - right) / Math.max(1, buckets.length);
+  const barWidth = Math.min(54, slot * 0.56);
+  const baseline = top + plotHeight;
+  const bars = buckets.map((bucket, index) => {
+    const count = Number(bucket.deal_count || 0);
+    return {
+      key: bucket.key,
+      count,
+      x: left + slot * index + (slot - barWidth) / 2,
+      y: baseline - plotHeight * count / max,
+      tooltip: `${bucket.label}: ${formatNumber(count)} сделок`,
+    };
+  });
+  return <div id="activity-distribution-chart" className="activity-distribution-chart" role="img"
+    aria-label="Распределение активных сделок по давности последней активности" hidden={hidden} ref={chartRef}>
+    {!hidden && <svg viewBox={`0 0 ${width} ${height}`} role="presentation"
+      className={compact ? 'activity-distribution-svg chart-compact' : 'activity-distribution-svg'}>
+      {[0, 1, 2, 3, 4].map((tick) => {
+        const y = top + plotHeight * (1 - tick / 4);
+        return <Fragment key={tick}>
+          <line x1={left} x2={width - right} y1={y} y2={y} className={tick === 0 ? 'chart-gridline chart-baseline' : 'chart-gridline'}/>
+          <text x={left - 9} y={y + 4} className="chart-axis-label" textAnchor="end">{formatNumber(Math.round(max * tick / 4))}</text>
+        </Fragment>;
+      })}
+      <SegmentedBars bars={bars} width={barWidth} baseline={baseline} step={compact ? 8 : 12}/>
+      {bars.map(({ key, count, x, y }, index) => <Fragment key={key}>
+        <text x={x + barWidth / 2} y={y - 8} className="chart-value-label" textAnchor="middle">{formatNumber(count)}</text>
+        <text x={x + barWidth / 2} y={height - 29} className="chart-axis-label chart-bucket-label" textAnchor="middle">
+          {compact && buckets[index].label === 'Нет даты' ? <>
+            <tspan x={x + barWidth / 2}>Нет</tspan>
+            <tspan x={x + barWidth / 2} dy="10">даты</tspan>
+          </> : buckets[index].label.replace(' дней', '')}
+        </text>
+      </Fragment>)}
+      <text x={width / 2} y={height - 7} className="chart-axis-label" textAnchor="middle">Давность последней активности</text>
+    </svg>}
+  </div>;
 }

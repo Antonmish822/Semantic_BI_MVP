@@ -154,10 +154,7 @@ export function DealsPage() {
           <p className="panel-subtitle">Интервалы по 5 дней · сделки стадии P</p>
         </div></div>
         <div id="activity-distribution-loading" className="empty-state" hidden={distribution.status !== 'loading'}>Загружаю распределение…</div>
-        <div id="activity-distribution-chart" className="activity-distribution-chart" role="img"
-          aria-label="Распределение активных сделок по давности последней активности" hidden={!chartVisible}>
-          {chartVisible && <DistributionChart buckets={buckets}/>}
-        </div>
+        <DistributionChart buckets={buckets} hidden={!chartVisible}/>
         <div id="activity-distribution-empty" className="empty-state" hidden={chartVisible || distribution.status === 'loading'}>
           {distribution.status === 'error' ? distribution.error : 'Нет сделок для распределения.'}
         </div>

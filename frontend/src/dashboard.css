@@ -1,5 +1,33 @@
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/HankenGrotesk-LatinExt.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/HankenGrotesk-Latin.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Onest';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/Onest-Cyrillic.woff2") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
 .react-web {
   color-scheme: dark;
+  font-family: 'Hanken Grotesk', 'Onest', system-ui, sans-serif;
   --canvas: #181513;
   --sidebar: #1f1a17;
   --paper: #24201d;
@@ -16,7 +44,38 @@
   --red: #f07d83;
   --red-soft: #40272a;
   --amber: #f1c66e;
-  --chart-secondary: #a9acf4;
+  --chart-primary: #f9a06d;
+  --chart-secondary: #b5b9f2;
+  --on-accent: #181513;
+  --panel-shadow: none;
+  --dialog-shadow: 0 24px 80px #0008;
+  --backdrop: #100e0cbb;
+}
+
+.react-web[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f5f0e9;
+  --sidebar: #eee7de;
+  --paper: #fffcf8;
+  --surface-raised: #f5eee6;
+  --ink: #2d211a;
+  --muted: #6b5c50;
+  --line: #dfd1c4;
+  --control-line: #94806f;
+  --accent: #a14121;
+  --accent-soft: #f7e1d2;
+  --focus: #8e391e;
+  --teal: #28634e;
+  --teal-soft: #e3eee5;
+  --red: #aa3742;
+  --red-soft: #f9e5e6;
+  --amber: #825511;
+  --chart-primary: #b04b26;
+  --chart-secondary: #525a9e;
+  --on-accent: #fffcf8;
+  --panel-shadow: 0 2px 6px #51371c0a;
+  --dialog-shadow: 0 24px 80px #37261742;
+  --backdrop: #2d1f155c;
 }
 
 .app-layout {
@@ -54,7 +113,7 @@
   place-items: center;
   border-radius: 8px;
   background: var(--accent);
-  color: var(--canvas);
+  color: var(--on-accent);
   font-size: 17px;
 }
 
@@ -80,7 +139,7 @@
   text-decoration: none;
 }
 
-.sidebar-link svg {
+.sidebar-link svg, .theme-switch svg {
   flex: 0 0 19px;
   width: 19px;
   height: 19px;
@@ -96,6 +155,56 @@
   border-inline-start-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.sidebar-settings {
+  margin-block-start: auto;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--line);
+}
+
+.theme-switch {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: start;
+  cursor: pointer;
+}
+
+.theme-switch:hover { background: var(--surface-raised); color: var(--ink); }
+.theme-switch[aria-checked="true"] { background: var(--accent-soft); color: var(--accent); }
+
+.theme-switch-track {
+  display: flex;
+  flex: 0 0 26px;
+  height: 15px;
+  align-items: center;
+  margin-inline-start: auto;
+  padding-inline: 2px;
+  border: 1px solid var(--control-line);
+  border-radius: 999px;
+}
+
+.theme-switch-track::after {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-track {
+  justify-content: end;
+  border-color: currentColor;
 }
 
 .react-web .shell {
@@ -229,7 +338,7 @@
 .react-web :is(.metric-card, .panel) {
   min-width: 0;
   border-radius: 11px;
-  box-shadow: none;
+  box-shadow: var(--panel-shadow);
 }
 .react-web .metric-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
@@ -243,16 +352,28 @@
 .react-web :is(.metric-foot, thead th, .employee-uri, .deal-uri, .activity-uri, footer) { color: var(--muted); }
 .react-web :is(.metric-label, .metric-value, h2, .ontology-list .secondary-button) { overflow-wrap: anywhere; }
 
-.react-web .chart-gridline { stroke: var(--line); }
+.react-web .chart-gridline { stroke: var(--line); stroke-dasharray: 3 5; }
+.react-web .chart-baseline { stroke: var(--control-line); stroke-dasharray: none; }
 .react-web .chart-axis-label { fill: var(--muted); }
-.react-web :is(.chart-axis-label, .chart-value-label) { font-size: 13px; }
-.react-web :is(.activity-distribution-bar, .response-trend-point) { fill: var(--accent); }
-.react-web .activity-distribution-bar:hover { fill: var(--focus); }
-.react-web .response-trend-line { stroke: var(--accent); }
-.react-web :is(.chart-response-axis, .employee-response-point) { fill: var(--teal); }
+.react-web :is(.chart-axis-label, .chart-value-label) {
+  font-family: inherit;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.react-web .chart-value-label { font-size: 16px; font-weight: 700; }
+.react-web .chart-compact .chart-axis-label { font-size: 11px; }
+.react-web .chart-compact .chart-bucket-label { font-size: 9px; }
+.react-web .chart-compact .chart-value-label { font-size: 12px; }
+.react-web .summary-chart-bar { fill: var(--chart-primary); }
+.react-web .summary-chart-bar:hover { fill: var(--focus); }
+.react-web .chart-response-axis { fill: var(--chart-primary); }
 .react-web :is(.chart-conversion-axis, .employee-conversion-point) { fill: var(--chart-secondary); }
-.react-web .employee-conversion-line { stroke: var(--chart-secondary); stroke-dasharray: 6 4; }
-.react-web .legend-response { background: var(--teal); }
+.react-web .employee-conversion-line { stroke: var(--chart-secondary); stroke-dasharray: 5 4; }
+.react-web .employee-pulse-legend { font-size: 12px; }
+.react-web .legend-response {
+  border-radius: 2px;
+  background: repeating-linear-gradient(to bottom, var(--chart-primary) 0 2px, transparent 2px 3px);
+}
 .react-web .legend-conversion { background: var(--chart-secondary); }
 
 .react-web :is(
@@ -295,15 +416,15 @@
 .react-web .is-promoted { border-color: var(--teal); box-shadow: none; }
 .react-web .is-highlighted { border-color: var(--amber); box-shadow: none; }
 .react-web .situation-item { background: var(--accent-soft); }
-.react-web .ontology-confirm-dialog { max-height: calc(100dvh - 32px); box-shadow: 0 24px 80px #0008; }
-.react-web .ontology-confirm-dialog::backdrop { background: #100e0cbb; }
+.react-web .ontology-confirm-dialog { max-height: calc(100dvh - 32px); box-shadow: var(--dialog-shadow); }
+.react-web .ontology-confirm-dialog::backdrop { background: var(--backdrop); }
 
 .react-web :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   box-shadow: none;
 }
-.react-web .sidebar-link:focus-visible { outline-offset: -3px; }
+.react-web :is(.sidebar-link, .theme-switch):focus-visible { outline-offset: -3px; }
 
 @media (max-width: 1119px) {
   .app-layout { grid-template-columns: 168px minmax(0, 1fr); }
@@ -322,7 +443,8 @@
     overflow: hidden;
     white-space: nowrap;
   }
-  .sidebar-link { justify-content: center; padding-inline: 6px; }
+  .sidebar-link, .theme-switch { justify-content: center; padding-inline: 6px; }
+  .theme-switch-label, .theme-switch-track { display: none; }
   .sidebar-tools { margin: -9px 0 0; border-inline-start: 0; border-block-start: 1px solid var(--line); padding: 6px 0 0; }
   .react-web .shell { padding-inline: 12px; }
 }
@@ -333,15 +455,12 @@
 
 @container dashboard (max-width: 680px) {
   .react-web :is(.query-tool-layout, .ontology-workspace, .assistant-layout) { grid-template-columns: minmax(0, 1fr); }
-  .react-web :is(.chart-axis-label, .chart-value-label) { font-size: 17px; }
 }
 
 @container dashboard (max-width: 420px) {
   .react-web :is(.metric-grid, .assistant-quick-tasks, .query-parameter-fields) { grid-template-columns: minmax(0, 1fr); }
   .react-web :is(.panel-heading, .section-heading) { flex-wrap: wrap; }
   .react-web :is(.chat-actions, .chat-table-actions, .query-result-heading) { flex-wrap: wrap; }
-  .react-web :is(.response-trend-chart, .activity-distribution-chart) { overflow-x: auto; }
-  .react-web :is(.response-trend-svg, .activity-distribution-svg) { min-width: 500px; }
   .react-web :is(.ontology-actions .secondary-button, .ontology-sidebar .secondary-button) { white-space: normal; }
 }
 

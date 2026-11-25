@@ -28,7 +28,6 @@
         <div>
           <p class="eyebrow">РЕДАКТОР И ОТЛАДКА</p>
           <h2 id="query-tool-title">Сохранённые SPARQL-запросы</h2>
-          <p class="panel-subtitle">Список связан с сохранёнными промптами в этом браузере. Проверка выполняется через MCP и применяет действующую серверную политику.</p>
         </div>
       </div>
       <div class="query-tool-layout">
@@ -50,7 +49,7 @@
             <summary>Опубликовать проверенный запрос в каталоге</summary>
             <label for="query-publish-title">Название<input id="query-publish-title" maxlength="120" autocomplete="off" placeholder="Например, Сделки за период"></label>
             <label for="query-publish-description">Описание<textarea id="query-publish-description" maxlength="500" rows="2" placeholder="Что показывает запрос"></textarea></label>
-            <label for="query-admin-token">Токен администратора инструментов<input id="query-admin-token" type="password" autocomplete="off" placeholder="ONTOLOGY_ADMIN_TOKEN"></label>
+            <label for="query-admin-token">Ключ администратора<input id="query-admin-token" type="password" autocomplete="off" placeholder="ключ администратора"></label>
             <button id="query-publish" class="secondary-button" type="button" disabled>Опубликовать</button>
             <p id="query-publish-status" class="panel-subtitle" role="status" aria-live="polite"></p>
           </details>

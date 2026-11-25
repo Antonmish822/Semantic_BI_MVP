@@ -207,7 +207,6 @@ export function ChatPage() {
       <div className="panel-heading"><div>
         <p className="eyebrow">ЧАТ С СЕМАНТИЧЕСКИМ BI</p>
         <h2 id="agent-title">Спросите о сделках, лидах и сотрудниках</h2>
-        <p className="panel-subtitle">Агент использует MCP-инструменты для выборок из RDF-хранилища.</p>
       </div></div>
       <details id="saved-prompts-panel" className="saved-prompts" onToggle={(event) => setPromptsOpen(event.currentTarget.open)}>
         <summary className="saved-prompts-summary">

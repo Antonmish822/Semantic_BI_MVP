@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { formatDate } from './DealsDetails';
+import { ThemeSwitch } from './ThemeSwitch';
 
 const pages = [
   ['/', 'Пульс сделок', 'M3 12h4l3-7 4 14 3-7h4'],
@@ -25,7 +26,7 @@ function NavLink({ href, label, icon, active }: { href: string; label: string; i
 export function PageNav({ active, tool }: { active: string; tool?: 'ontology' | 'queries' }) {
   return <aside className="app-sidebar">
     <div className="sidebar-brand" aria-hidden="true">
-      <span className="sidebar-mark">P</span><span>Semantic BI</span>
+      <span className="sidebar-mark">P</span><span>Semantix</span>
     </div>
     <nav className="sidebar-nav" aria-label="Страницы дашборда">
       {pages.map(([href, label, icon]) =>
@@ -35,6 +36,7 @@ export function PageNav({ active, tool }: { active: string; tool?: 'ontology' | 
       {tools.map(([id, label, icon]) =>
         <NavLink key={id} href={`/tools/${id}`} label={label} icon={icon} active={id === tool}/>)}
     </nav>}
+    <div className="sidebar-settings"><ThemeSwitch/></div>
   </aside>;
 }
 
@@ -42,7 +44,7 @@ export function DashboardHeader({ title, children }: { title: string; children: 
   return <header className="topbar">
     <div className="brand">
       <div className="brand-mark" aria-hidden="true">P</div>
-      <div><p className="eyebrow">SEMANTIC BI · BITRIX24</p><h1>{title}</h1></div>
+      <div><p className="eyebrow">SEMANTIX · BITRIX24</p><h1>{title}</h1></div>
     </div>
     <div className="header-actions"><a className="auth-link" href="/auth/logout">Выйти</a>{children}</div>
   </header>;
