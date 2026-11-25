@@ -404,8 +404,8 @@
 .react-web :is(.chat-message, .saved-prompt-item, tbody td, .query-result-table th, .query-result-table td) {
   border-color: var(--line);
 }
-.react-web .chat-user { border-inline-start-color: var(--teal); }
-.react-web .chat-assistant { border-inline-start-color: var(--amber); }
+.react-web .chat-user { background: var(--accent-soft); }
+.react-web .chat-user .chat-meta { color: var(--accent); }
 .react-web .chat-body pre code, .react-web .saved-prompt-query pre code { background: transparent; }
 .react-web :is(.saved-prompt-query pre, .assistant-state) { background: var(--teal-soft); }
 .react-web :is(.published-query-delete, .saved-prompt-button--delete) { color: var(--red); }
@@ -458,6 +458,9 @@
 }
 
 @container dashboard (max-width: 420px) {
+  .react-web .chat-log { padding: 10px; gap: 12px; }
+  .react-web .chat-message { max-width: 94%; padding: 10px 12px; }
+  .react-web .chat-user { max-width: 88%; }
   .react-web :is(.metric-grid, .assistant-quick-tasks, .query-parameter-fields) { grid-template-columns: minmax(0, 1fr); }
   .react-web :is(.panel-heading, .section-heading) { flex-wrap: wrap; }
   .react-web :is(.chat-actions, .chat-table-actions, .query-result-heading) { flex-wrap: wrap; }
