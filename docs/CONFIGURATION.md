@@ -40,7 +40,7 @@
 |---|---:|---|
 | `MCP_ENABLE_SAFE_SPARQL` | `0` | Серверный выключатель инструмента. Должен быть включён. |
 | `AGENT_ALLOW_SPARQL` | `0` | Показывает `sparql_select` AI Agent; включайте вместе с серверным флагом. |
-| `MCP_AUTH_TOKEN` | пусто | Случайный bearer token для MCP. Обязателен для safe SELECT и защищает MCP endpoint, если задан. Передавайте тот же токен агенту или используйте `AGENT_MCP_AUTH_TOKEN`. |
+| `MCP_AUTH_TOKEN` | пусто | Случайный bearer token для MCP. Обязателен для safe SELECT и защищает MCP endpoint, если задан. Передавайте то же значение сервису онтологий и агенту. Для агента можно использовать `AGENT_MCP_AUTH_TOKEN`. |
 | `AGENT_MCP_AUTH_TOKEN` | пусто | Необязательный token для исходящих вызовов агента к MCP. Если пуст, агент использует `MCP_AUTH_TOKEN`. |
 | `MCP_AUTH_CLIENT_ID` | `authenticated-service` в коде; в примере `agent-service` | Неперсональный идентификатор вызывающего сервиса в MCP audit. |
 | `MCP_SAFE_SPARQL_URL` | пусто | Base URL выделенного GraphDB, например `http://graphdb-safe:7200`; клиент добавляет `/repositories/<repository>`. Не включайте имя repository в URL. |
