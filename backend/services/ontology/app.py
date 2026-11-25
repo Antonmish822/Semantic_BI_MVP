@@ -20,7 +20,7 @@ from ontology_admin import (
     MAX_TTL_BYTES, OntologyError, delete_ontology, graph_request, graph_store_url,
     list_ontologies, list_quarantine, ontology_delete_preview, ontology_uri,
     parse_ttl, publication_history, publish, purge_expired_quarantine,
-    read_ontology, read_revision, restore_quarantined, rdf_graphs_equivalent,
+    publish_builtin_if_missing, read_ontology, read_revision, restore_quarantined, rdf_graphs_equivalent,
     save_text,
 )
 from ontology_assistant import (
@@ -32,6 +32,8 @@ from services.analytics.domain import create_store_client
 
 app = FastAPI(title="Semantic BI Ontology", docs_url=None, redoc_url=None)
 ONTOLOGY_DIR = Path(os.environ.get("ONTOLOGY_DIR", str(ONTOLOGIES_DIR)))
+BUILTIN_ONTOLOGY_DIR = Path("/app/builtin-ontologies")
+BUILTIN_ONTOLOGIES = ("activity-classification", "deal-classification", "lead-classification", "user-classification")
 PURGE_STOP = threading.Event()
 PURGE_THREAD: threading.Thread | None = None
 
@@ -243,6 +245,28 @@ def _purge_loop():
         except Exception as exc:
             print(f"Ontology quarantine cleanup failed ({type(exc).__name__})")
         PURGE_STOP.wait(3600)
+
+
+@app.on_event("startup")
+def start_builtin_publication():
+    if os.environ.get("ONTOLOGY_AUTO_PUBLISH_BUILTINS", "0").strip() == "1":
+        threading.Thread(target=_publish_builtins, name="ontology-builtin-publication", daemon=True).start()
+
+
+def _publish_builtins():
+    try:
+        store = create_store_client()
+    except Exception as exc:
+        print(f"Ontology automatic publication could not configure RDF: {type(exc).__name__}", flush=True)
+        return
+    if store.backend != "graphdb":
+        return
+    for slug in BUILTIN_ONTOLOGIES:
+        try:
+            if publish_builtin_if_missing(ONTOLOGY_DIR, BUILTIN_ONTOLOGY_DIR / f"{slug}.ttl", store):
+                print(f"Ontology automatically published: {slug}", flush=True)
+        except Exception as exc:
+            print(f"Ontology automatic publication failed for {slug}: {type(exc).__name__}", flush=True)
 
 
 @app.on_event("startup")
