@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiJson, type Category, type ViewStateResponse } from './api';
 import { blockProps, Situations, useRefreshRevision } from './AnalyticsView';
-import { Connection, DashboardHeader, PageNav, RefreshButton, SectionTab } from './DashboardChrome';
+import { AnalyticsHeader, SectionTab } from './DashboardChrome';
 import { formatDate, formatNumber } from './DealsDetails';
 import { formatDuration, TrendChart } from './TrendChart';
 import { useApiRequest } from './useApiRequest';
@@ -60,31 +60,21 @@ export function LeadsPage() {
     tooltip: (label: string) => `${label}: ${formatNumber(point.sla_within_2h_count ?? 0)} из ${formatNumber(point.sla_eligible_count ?? 0)} · ${point.sla_within_2h_ratio == null ? 'нет данных' : percentage.format(point.sla_within_2h_ratio)}`,
   }));
   return <main className="shell">
-    <DashboardHeader title="CRM Pulse">
-      <label className="team-filter global-filter">
-        <span>Воронка</span>
+    <AnalyticsHeader title="Пульс лидов" tabsLabel="Разделы лидов"
+      data={pulse.data} offline={offline} refreshing={pulse.status === 'loading'} onRefresh={refresh}
+      filter={
         <select id="lead-conversion-category" className="project-filter" aria-label="Фильтр по воронке"
           value={category} onChange={(event) => setCategory(event.target.value)}>
           <option value="all">Все воронки</option>
           {categories.map(({ id, name }) => <option key={id} value={id}>{name || `Воронка ${id}`}</option>)}
         </select>
-      </label>
-      <Connection status={offline ? 'offline' : pulse.data ? 'online' : 'pending'}>
-        {offline ? 'Нет соединения' : pulse.data
-          ? pulse.data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён'
-          : 'Подключение…'}
-      </Connection>
-      <span id="updated" className="updated">{pulse.data ? `Обновлено ${pulse.data.as_of ? formatDate(pulse.data.as_of) : 'Нет активности'}` : '—'}</span>
-      <RefreshButton disabled={pulse.status === 'loading'} onClick={refresh}/>
-    </DashboardHeader>
-    <PageNav active="/leads"/>
-    <nav className="section-tabs" aria-label="Разделы лидов">
+      }>
       <SectionTab id="leads-tab" panel="leads-tab-panel" active={!summaries} onClick={() => setSummaries(false)}>Лиды</SectionTab>
       <SectionTab id="summaries-tab" panel="summaries-tab-panel" active={summaries} onClick={() => {
         setSummaries(true);
         setTabRevision((value) => value + 1);
       }}>Сводки</SectionTab>
-    </nav>
+    </AnalyticsHeader>
     <div id="error" className="error-banner" role="alert" hidden={!offline}>{pulse.status === 'error' && pulse.error}</div>
     <div id="leads-tab-panel" className="tab-content" hidden={summaries}>
       <Situations data={view.status === 'error' ? undefined : view.data}/>

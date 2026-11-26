@@ -2,11 +2,10 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import { apiJson } from './api';
 import { readPublishedDraft, readSavedPrompts, savedPromptsKey, type SavedPrompt } from './browserStorage';
 import { copyText } from './clipboard';
-import { DashboardHeader, PageNav } from './DashboardChrome';
+import { DashboardHeader } from './DashboardChrome';
 import { ParameterFields, QueryResult, ResultSwitch, type ResultMode } from './QueryResult';
 import { asRecord, collectParameters, describeParameters, ParameterError, parseQueryResult, runQuery,
   toolsAuthorization, type QueryParameter, type QueryValues } from './queryTools';
-import { ToolsNav } from './ToolsNav';
 import { useToolsToken } from './useToolsToken';
 
 type Entry = SavedPrompt & { draftTitle?: string };
@@ -187,13 +186,11 @@ export function QueryDebuggerPage() {
 
   return <main className="shell">
     <DashboardHeader title="CRM Pulse">{null}</DashboardHeader>
-    <PageNav active="/tools/ontology"/><ToolsNav active="queries"/>
     <div id="query-tool-notice" className={notice && !notice.error ? 'error-banner query-notice-success' : 'error-banner'}
       role="status" hidden={!notice}>{notice?.message}</div>
     <section className="panel query-tool-panel" aria-labelledby="query-tool-title">
       <div className="panel-heading"><div>
         <p className="eyebrow">РЕДАКТОР И ОТЛАДКА</p><h2 id="query-tool-title">Сохранённые SPARQL-запросы</h2>
-        <p className="panel-subtitle">Список связан с сохранёнными промптами в этом браузере. Проверка выполняется через MCP и применяет действующую серверную политику.</p>
       </div></div>
       <div className="query-tool-layout">
         <aside className="query-tool-list-panel" aria-label="Список сохранённых запросов">
@@ -250,7 +247,7 @@ export function QueryDebuggerPage() {
             <label htmlFor="query-publish-description">Описание<textarea id="query-publish-description" maxLength={500} rows={2}
               value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Что показывает запрос"/></label>
             <label htmlFor="query-admin-token">Токен администратора инструментов<input id="query-admin-token" type="password"
-              ref={tokenField} autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="ONTOLOGY_ADMIN_TOKEN"/></label>
+              ref={tokenField} autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="ключ администратора"/></label>
             <button id="query-publish" className="secondary-button" type="button"
               disabled={!editor.result?.passed || published || publishBusy} onClick={() => void publish()}>Опубликовать</button>
             <p id="query-publish-status" className="panel-subtitle" role="status" aria-live="polite">{publishStatus}</p>

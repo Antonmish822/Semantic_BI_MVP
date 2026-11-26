@@ -123,10 +123,10 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .agent-progress-indicator { position: absolute; width: 34%; height: 100%; border-radius: inherit; background: var(--teal); animation: agent-progress-slide 1.4s ease-in-out infinite; }
 @keyframes agent-progress-slide { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
 @media (prefers-reduced-motion: reduce) { .agent-progress-indicator { animation-duration: 4s; } }
-.chat-log { display: grid; gap: 12px; max-height: 420px; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdfd; }
-.chat-message { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--paper); border: 1px solid #edf0f1; }
-.chat-user { border-left: 3px solid var(--teal); }
-.chat-assistant { border-left: 3px solid var(--amber); }
+.chat-log { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 16px; max-height: 420px; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdfd; }
+.chat-message { display: grid; gap: 8px; min-width: 0; width: fit-content; max-width: 90%; padding: 12px 16px; border-radius: 16px; background: var(--paper); border: 1px solid var(--line); }
+.chat-user { justify-self: end; max-width: 80%; border-end-end-radius: 4px; background: var(--teal-soft); }
+.chat-assistant { justify-self: start; border-end-start-radius: 4px; }
 .chat-meta { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
 .chat-message-actions { display: flex; justify-content: flex-end; }
 .save-prompt-button, .saved-prompt-button { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--teal); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; }
@@ -230,6 +230,7 @@ footer { display: flex; justify-content: space-between; gap: 16px; padding: 2px 
 .published-query-result { min-height: 50px; max-height: 340px; }
 .chat-duration { margin-left: 9px; font-size: 10px; font-weight: 400; letter-spacing: 0; text-transform: none; }
 .chat-body { min-width: 0; font-size: 12px; color: var(--ink); line-height: 1.55; overflow-wrap: anywhere; }
+.chat-user .chat-body { white-space: pre-wrap; }
 .chat-body > :first-child { margin-top: 0; }
 .chat-body > :last-child { margin-bottom: 0; }
 .chat-body p { margin: 8px 0; }

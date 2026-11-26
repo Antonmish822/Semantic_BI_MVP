@@ -137,7 +137,7 @@ export function OntologyAssistant({ token, context, config, unavailableConfig, n
   return <section className="panel assistant-panel" aria-labelledby="assistant-title">
     <div className="panel-heading assistant-heading">
       <div><p className="eyebrow">ПРЕДЛОЖЕНИЯ БЕЗ АВТОМАТИЧЕСКОЙ ЗАПИСИ</p><h2 id="assistant-title">ИИ-помощник по онтологиям</h2>
-        <p id="assistant-model" className="panel-subtitle">{config ? `Модель: ${config.model} · смена через ONTOLOGY_AI_MODEL на сервере` : 'Проверяю конфигурацию…'}</p></div>
+        </div>
       <span id="assistant-state" className="assistant-state">{status || (config ? config.enabled ? 'Готов' : 'Не настроен'
         : unavailableConfig ? 'Конфигурация недоступна' : 'Загрузка')}</span>
     </div>

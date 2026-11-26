@@ -1,11 +1,19 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="react-web" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
-    <title>CRM Pulse — Semantic BI</title>
-    <style>#root { display: contents; }</style>
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      try {
+        if (localStorage.getItem('crm-pulse-theme') === 'light') {
+          document.documentElement.dataset.theme = 'light';
+        }
+      } catch {
+        // Keep the default theme if storage is unavailable.
+      }
+    </script>
+    <title>CRM Pulse — Semantix</title>
   </head>
   <body>
     <div id="root"></div>

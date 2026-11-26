@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { apiJson } from './api';
 import { publishedDraftKey, type PublishedDraft } from './browserStorage';
 import { copyText } from './clipboard';
-import { PageNav } from './DashboardChrome';
 import { ParameterFields, QueryResult, ResultSwitch, type ResultMode } from './QueryResult';
 import { collectParameters, describeParameters, ParameterError, parseQueryResult, runQuery,
   toolsAuthorization, type QueryParameter, type QueryValues } from './queryTools';
@@ -156,14 +155,13 @@ export function QueryCatalogPage() {
     <header className="topbar">
       <div className="brand"><div className="brand-mark" aria-hidden="true">P</div><div><p className="eyebrow">SEMANTIC BI · BITRIX24</p><h1>CRM Pulse</h1></div></div>
       <div className="header-actions published-query-admin">
-        <label className="team-filter"><span>Токен администратора инструментов</span>
-          <input id="published-query-token" type="password" autoComplete="off" placeholder="ONTOLOGY_ADMIN_TOKEN"
+        <label className="team-filter"><span>Ключ администратора инструментов</span>
+          <input id="published-query-token" type="password" autoComplete="off" placeholder="ключ администратора"
             value={token} onChange={(event) => setToken(event.target.value)}/>
         </label>
         <a className="auth-link" href="/auth/logout">Выйти</a>
       </div>
     </header>
-    <PageNav active="/queries"/>
     <div id="published-query-notice" className={notice && !notice.error ? 'error-banner query-notice-success' : 'error-banner'}
       role="status" hidden={!notice}>{notice?.message}</div>
     <section className="panel published-query-panel" aria-labelledby="published-query-title">
@@ -174,7 +172,7 @@ export function QueryCatalogPage() {
         <button id="published-query-refresh" className="secondary-button" type="button" disabled={catalog.status === 'loading'} onClick={refresh}>Обновить</button>
       </div>
       <p id="published-query-admin-status" className="panel-subtitle" role="status" data-admin-enabled={catalog.data ? enabled : undefined}>
-        {catalog.data && (enabled ? 'Публикация и удаление доступны администратору с ONTOLOGY_ADMIN_TOKEN.'
+        {catalog.data && (enabled ? 'Публикация и удаление доступны пользователям с ключом администратора.'
           : 'Публикация и удаление отключены: серверу не задан ONTOLOGY_ADMIN_TOKEN.')}
       </p>
       <div id="published-query-list" className="published-query-list">

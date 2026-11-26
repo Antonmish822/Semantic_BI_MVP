@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { dealsApi, type Category } from './api';
 import { blockProps, Situations, useRefreshRevision } from './AnalyticsView';
-import { Connection, DashboardHeader, PageNav, RefreshButton, SectionTab } from './DashboardChrome';
-import { ActivityRow, DistributionChart, RedDealRow, formatDate, formatNumber } from './DealsDetails';
+import { AnalyticsHeader, SectionTab } from './DashboardChrome';
+import { ActivityRow, DistributionChart, RedDealRow, formatNumber } from './DealsDetails';
 import { useApiRequest } from './useApiRequest';
 
 const metrics = [
@@ -37,7 +37,7 @@ export function DealsPage() {
   const [redOpen, setRedOpen] = useState(false);
   const [activitiesOpen, setActivitiesOpen] = useState(false);
   const [activityCount, setActivityCount] = useState(20);
-  const [revision, refresh] = useRefreshRevision('CRM Pulse — Semantic BI');
+  const [revision, refresh] = useRefreshRevision('Пульс сделок — Semantic BI');
 
   const pulse = useApiRequest(project, dealsApi.pulse, revision);
   const view = useApiRequest(project, dealsApi.viewState, revision);
@@ -71,28 +71,18 @@ export function DealsPage() {
   const offline = pulse.status === 'error';
 
   return <main className="shell">
-    <DashboardHeader title="CRM Pulse">
-      <label className="team-filter global-filter">
-        <span>Воронка</span>
+    <AnalyticsHeader title="Пульс сделок" tabsLabel="Разделы сделок"
+      data={pulse.data} offline={offline} refreshing={pulse.status === 'loading'} onRefresh={refresh}
+      filter={
         <select id="project-filter" className="project-filter" aria-label="Фильтр дашборда по воронке"
           value={project} onChange={(event) => setProject(event.target.value)}>
-          <option value="all">{categories ? 'Все категории' : 'Все сделки'}</option>
+          <option value="all">Все воронки</option>
           {categories?.map(({ id, name }) => <option key={id} value={id}>{name || `Категория ${id}`}</option>)}
         </select>
-      </label>
-      <Connection status={offline ? 'offline' : pulse.data ? 'online' : 'pending'}>
-        {offline ? 'Нет соединения' : pulse.data
-          ? pulse.data.backend === 'fuseki' ? 'Fuseki подключён' : 'GraphDB подключён'
-          : 'Подключение…'}
-      </Connection>
-      <span id="updated" className="updated">{pulse.data ? `Обновлено ${formatDate(pulse.data.as_of)}` : '—'}</span>
-      <RefreshButton disabled={pulse.status === 'loading'} onClick={refresh}/>
-    </DashboardHeader>
-    <PageNav active="/"/>
-    <nav className="section-tabs" aria-label="Разделы сделок">
+      }>
       <SectionTab id="deals-tab" panel="deals-tab-panel" active={!summaries} onClick={() => setSummaries(false)}>Сделки</SectionTab>
       <SectionTab id="summaries-tab" panel="summaries-tab-panel" active={summaries} onClick={() => setSummaries(true)}>Сводки</SectionTab>
-    </nav>
+    </AnalyticsHeader>
 
     <div id="deals-tab-panel" className="tab-content" hidden={summaries}>
       <div id="error" className="error-banner" role="alert" hidden={!offline}>{pulse.status === 'error' && pulse.error}</div>
@@ -164,10 +154,7 @@ export function DealsPage() {
           <p className="panel-subtitle">Интервалы по 5 дней · сделки стадии P</p>
         </div></div>
         <div id="activity-distribution-loading" className="empty-state" hidden={distribution.status !== 'loading'}>Загружаю распределение…</div>
-        <div id="activity-distribution-chart" className="activity-distribution-chart" role="img"
-          aria-label="Распределение активных сделок по давности последней активности" hidden={!chartVisible}>
-          {chartVisible && <DistributionChart buckets={buckets}/>}
-        </div>
+        <DistributionChart buckets={buckets} hidden={!chartVisible}/>
         <div id="activity-distribution-empty" className="empty-state" hidden={chartVisible || distribution.status === 'loading'}>
           {distribution.status === 'error' ? distribution.error : 'Нет сделок для распределения.'}
         </div>
