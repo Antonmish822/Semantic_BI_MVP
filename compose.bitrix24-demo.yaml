@@ -1,0 +1,12 @@
+name: bitrix24-demo
+services:
+  graphdb:
+    image: ontotext/graphdb:10.8.14
+    environment:
+      GDB_HEAP_SIZE: 2g
+    ports:
+      - "127.0.0.1:17200:7200"
+    volumes:
+      - graphdb-data:/opt/graphdb/home
+volumes:
+  graphdb-data:
