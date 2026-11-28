@@ -6,7 +6,7 @@
 
 GraphDB 11.5.2, security выключена. Приложение использует repository `bitrix24`. Текущий пользователь базы — admin. Приложение, загрузчик и монитор подключаются без credentials. Поддержка HTTP Basic есть в коде всех трёх клиентов.
 
-Production остаётся на SHA `1496149` на этапе переключения credentials. Обновление кода до актуального main следует после проверки dev/CD. Локальный diff `ontologies/deal-classification.ttl` сохраняется отдельно.
+Production остаётся на SHA `1496149` на этапе переключения credentials. По согласованию с командой main и dev временно подключаются к синтетическому repository `bitrix24_demo` с префиксом `urn:bitrix24:entity:demo:`. Набор из ветки `work/demo_dataset`, коммит `d0f751e`, содержит 234477 явных квадов. Обновление кода до актуального main следует после проверки dev/CD. Локальный diff `ontologies/deal-classification.ttl` сохраняется отдельно.
 
 ## Резервная копия перед переключением
 
@@ -20,15 +20,16 @@ Production остаётся на SHA `1496149` на этапе переключ�
 
 ## Учётные записи
 
-Создать уникальные случайные пароли и сохранить root-only файл credentials на VPS. Права scoped к фактическим repositories клиентов, сверенным с их конфигурациями. Для repository bitrix24 предусмотрены следующие роли.
+Создать уникальные случайные пароли и сохранить root-only файл credentials на VPS. Права scoped к фактическим repositories клиентов, сверенным с их конфигурациями. Для временного синтетического режима предусмотрены следующие роли.
 
 | Клиент | Учётная запись | Права |
 |---|---|---|
 | Оператор переключения и восстановления | `semantic_bi_ops` | ROLE_ADMIN |
-| Текущее приложение production | `semantic_bi_prod` | ROLE_USER, READ_REPO_bitrix24, WRITE_REPO_bitrix24 |
+| Текущее приложение production | `semantic_bi_prod` | ROLE_USER, READ_REPO_bitrix24_demo, WRITE_REPO_bitrix24_demo |
 | Loader | `semantic_bi_loader` | ROLE_USER, READ_REPO_bitrix24, WRITE_REPO_bitrix24 |
-| Monitor | `semantic_bi_monitor` | ROLE_USER, READ_REPO_bitrix24 |
-| Dev | `semantic_bi_dev` | ROLE_USER, READ_REPO_bitrix24 |
+| Monitor | `semantic_bi_monitor` | ROLE_USER, READ_REPO_bitrix24_demo |
+| Dev | `semantic_bi_dev` | ROLE_USER, READ_REPO_bitrix24_demo |
+| Проверка записи в demo | `semantic_bi_demo_writer` | ROLE_USER, READ_REPO_bitrix24_demo, WRITE_REPO_bitrix24_demo |
 
 GraphDB создаёт пользователей через `POST /rest/security/users/<username>` с полями username, password и grantedAuthorities. Существующие записи перед созданием проверить, их credentials самопроизвольно не перезаписывать. [Документация GraphDB](https://graphdb.ontotext.com/documentation/11.5/admin-with-curl.html).
 
@@ -36,7 +37,7 @@ GraphDB создаёт пользователей через `POST /rest/securit
 
 1. Сохранить резервную копию и проверить HTTP-ответ production до изменения.
 2. Создать и проверить новые учётные записи, пока security выключена. Пароли не выводить в журнал или чат.
-3. В production `.env` установить RDF_USERNAME/RDF_PASSWORD и MCP_SAFE_SPARQL_USERNAME/MCP_SAFE_SPARQL_PASSWORD для prod. В loader.yaml установить graphdb.username/password. В monitor.env установить RDF_USERNAME/RDF_PASSWORD.
+3. В production `.env` установить RDF_USERNAME/RDF_PASSWORD и MCP_SAFE_SPARQL_USERNAME/MCP_SAFE_SPARQL_PASSWORD для prod, repository bitrix24_demo и demo graph prefix в обоих RDF-клиентах. В loader.yaml установить graphdb.username/password. В monitor.env установить RDF_USERNAME/RDF_PASSWORD и параметры demo repository.
 4. Пересоздать текущие клиенты существующими образами, затем проверить их работоспособность. Для приложения использовать его текущий compose.yaml, каталог и project name semantic_bi_mvp. Для loader/monitor использовать исходные параметры запуска из labels.
 
 ```bash
