@@ -48,6 +48,9 @@ jobs:
           npm --prefix frontend run build
       - name: Run backend and contract tests
         run: uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Check dev deployment receiver
+        working-directory: .
+        run: uv run --directory backend --locked python -m unittest discover -s deploy/dev/tests -v
 
   verify:
     runs-on: ubuntu-latest
@@ -84,5 +87,25 @@ jobs:
           persist-credentials: false
       - name: Validate Compose configuration
         run: docker compose --env-file .env.example config --quiet
+      - name: Validate isolated dev configuration
+        env:
+          DEV_RELEASE_SHA: ${{ github.sha }}
+        run: docker compose --env-file .env.example -f compose.yaml -f deploy/dev/compose.override.yaml config --quiet
       - name: Build all application services
         run: docker compose --env-file .env.example build
+      - name: Check the dev image archive
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          bash deploy/dev/build.sh
+          python3 - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('receive', 'deploy/dev/receive.py')
+          receiver = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(receiver)
+          archive = Path('images.tar.gz')
+          receiver.validate_images(archive, os.environ['RELEASE_SHA'])
+          archive.unlink()
+          PY
