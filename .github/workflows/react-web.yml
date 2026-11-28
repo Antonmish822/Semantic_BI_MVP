@@ -50,7 +50,7 @@ jobs:
         run: uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Check dev deployment receiver
         working-directory: .
-        run: uv run --directory backend --locked python -m unittest discover -s deploy/dev/tests -v
+        run: uv run --directory backend --locked python -m unittest discover -s ../deploy/dev/tests -v
 
   verify:
     runs-on: ubuntu-latest
