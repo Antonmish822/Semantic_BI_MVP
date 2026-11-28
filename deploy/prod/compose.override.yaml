@@ -1,0 +1,64 @@
+x-limits: &limits
+  cpus: 0.5
+  mem_limit: 128m
+  pids_limit: 128
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  crm-pulse-monitor:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-prod/gateway:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
+    environment:
+      FORWARDED_ALLOW_IPS: '*'
+      AUTH_COOKIE_DOMAIN: ''
+      AUTH_COOKIE_SECURE: '1'
+    ports: !override ['127.0.0.1:8088:8088']
+
+  auth-service:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-prod/auth:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
+    environment:
+      AUTH_COOKIE_DOMAIN: ''
+      AUTH_COOKIE_SECURE: '1'
+
+  auth-redis:
+    <<: *limits
+    user: redis:redis
+    mem_limit: 64m
+
+  analytics-service:
+    <<: *limits
+    mem_limit: 192m
+    build: !reset null
+    image: semantic-bi-prod/analytics:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
+
+  ontology-service:
+    <<: *limits
+    mem_limit: 192m
+    build: !reset null
+    image: semantic-bi-prod/ontology:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
+    environment:
+      ONTOLOGY_AUTO_PUBLISH_BUILTINS: '0'
+    volumes: !override
+      - /home/antonmisurov81/Semantic_BI_MVP/ontologies:/app/ontologies:rw
+
+  agent-service:
+    <<: *limits
+    mem_limit: 256m
+    build: !reset null
+    image: semantic-bi-prod/agent:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
+    environment:
+      AGENT_CORS_ALLOW_ORIGINS: https://semantixpulse.ru
+
+  mcp-graphdb:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-prod/mcp:${PROD_RELEASE_SHA:?Set PROD_RELEASE_SHA}
