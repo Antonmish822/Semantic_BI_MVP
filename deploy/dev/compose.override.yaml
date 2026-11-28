@@ -1,0 +1,77 @@
+# Apply after the reviewed base compose.yaml installed in /etc/semantic-bi/dev/.
+x-limits: &limits
+  cpus: 0.5
+  mem_limit: 128m
+  pids_limit: 128
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  crm-pulse-monitor:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-dev/gateway:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+    environment:
+      AUTH_COOKIE_NAME: semantic_bi_dev_session
+      AUTH_COOKIE_DOMAIN: ''
+      AUTH_COOKIE_SECURE: '1'
+    ports: !override ['127.0.0.1:18088:8088']
+
+  auth-service:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-dev/auth:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+    environment:
+      AUTH_COOKIE_NAME: semantic_bi_dev_session
+      AUTH_COOKIE_DOMAIN: ''
+      AUTH_COOKIE_SECURE: '1'
+
+  auth-redis:
+    <<: *limits
+    mem_limit: 64m
+
+  analytics-service:
+    <<: *limits
+    mem_limit: 192m
+    build: !reset null
+    image: semantic-bi-dev/analytics:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+
+  ontology-service:
+    <<: *limits
+    mem_limit: 192m
+    build: !reset null
+    image: semantic-bi-dev/ontology:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+    environment:
+      ONTOLOGY_AUTO_PUBLISH_BUILTINS: '0'
+      ONTOLOGY_ADMIN_TOKEN: ''
+    volumes: !override [ontologies:/app/ontologies]
+    networks: !override [rdf_store, ontology_internal, dev_egress]
+
+  agent-service:
+    <<: *limits
+    mem_limit: 256m
+    build: !reset null
+    image: semantic-bi-dev/agent:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+    environment:
+      AGENT_CORS_ALLOW_ORIGINS: https://dev.semantixpulse.ru
+      ONTOLOGY_ADMIN_TOKEN: ''
+    networks: !override [rdf_store, agent_internal, dev_egress]
+
+  mcp-graphdb:
+    <<: *limits
+    build: !reset null
+    image: semantic-bi-dev/mcp:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
+
+networks:
+  rdf_store:
+    external: true
+    name: semantic_bi_dev_rdf
+  dev_egress:
+
+volumes:
+  ontologies:
