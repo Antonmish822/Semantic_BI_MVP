@@ -153,7 +153,17 @@ for path in source.glob('*.ttl'):
         raise ValueError('Invalid current release marker')
     try:
         compose(sha, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90')
+        compose(sha, 'exec', '-T', 'analytics-service', 'python', '-c',
+                'from common.rdf_transport import create_rdf_transport; '
+                'rows = create_rdf_transport().select("SELECT (1 AS ?health) WHERE {}"); '
+                'assert rows and rows[0]["health"]["value"] == "1"')
         wait_ready()
+        marker = STATE / 'current.next'
+        with marker.open('w') as output:
+            output.write(sha + '\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(marker, current)
     except Exception:
         if previous:
             compose(previous, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90')
@@ -162,9 +172,6 @@ for path in source.glob('*.ttl'):
         else:
             compose(sha, 'stop')
         raise
-    marker = STATE / 'current.next'
-    marker.write_text(sha + '\n')
-    os.replace(marker, current)
     print(f'Deployed dev release {sha}', flush=True)
 
 

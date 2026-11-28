@@ -5,6 +5,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -101,6 +102,45 @@ class ReceiverChecks(unittest.TestCase):
             with patch.object(receiver, 'CONFIG', config), patch.object(receiver, 'urlopen', side_effect=responses):
                 with self.assertRaisesRegex(ValueError, 'Anonymous'):
                     receiver.check_database_access()
+
+    def deployment(self, directory):
+        inspection = SimpleNamespace(stdout=json.dumps([{'NetworkSettings': {'Networks': {receiver.NETWORK: {}}}}]))
+        patches = [patch.object(receiver, 'STATE', Path(directory)),
+                   patch.object(receiver, 'validate_images'),
+                   patch.object(receiver, 'check_database_access'),
+                   patch.object(receiver, 'run', return_value=inspection)]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_failed_readiness_restores_previous_release_and_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.deployment(directory)
+            previous = 'b' * 40
+            (Path(directory) / 'current').write_text(previous + '\n')
+            with patch.object(receiver, 'compose') as compose, \
+                    patch.object(receiver, 'wait_ready', side_effect=[RuntimeError('not ready'), None]):
+                with self.assertRaisesRegex(RuntimeError, 'not ready'):
+                    receiver.deploy(SHA, Path('unused'))
+                self.assertTrue(any(call.args[:2] == (previous, 'up') for call in compose.call_args_list))
+            self.assertEqual((Path(directory) / 'current').read_text().strip(), previous)
+
+    def test_failed_first_release_stops_dev(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.deployment(directory)
+            with patch.object(receiver, 'compose') as compose, \
+                    patch.object(receiver, 'wait_ready', side_effect=RuntimeError('not ready')):
+                with self.assertRaises(RuntimeError):
+                    receiver.deploy(SHA, Path('unused'))
+                compose.assert_any_call(SHA, 'stop')
+            self.assertFalse((Path(directory) / 'current').exists())
+
+    def test_successful_release_records_exact_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.deployment(directory)
+            with patch.object(receiver, 'compose'), patch.object(receiver, 'wait_ready'):
+                receiver.deploy(SHA, Path('unused'))
+            self.assertEqual((Path(directory) / 'current').read_text().strip(), SHA)
 
 
 if __name__ == '__main__':
