@@ -93,6 +93,16 @@ jobs:
         run: docker compose --env-file .env.example -f compose.yaml -f deploy/dev/compose.override.yaml config --quiet
       - name: Build all application services
         run: docker compose --env-file .env.example build
+      - name: Check restricted Redis startup for dev
+        env:
+          DEV_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker network create --internal semantic_bi_dev_rdf
+          compose=(docker compose --project-name dev-ci --env-file .env.example
+            -f compose.yaml -f deploy/dev/compose.override.yaml)
+          trap '"${compose[@]}" down --volumes' EXIT
+          "${compose[@]}" up -d --no-deps --wait --wait-timeout 60 auth-redis
       - name: Check the dev image archive
         env:
           RELEASE_SHA: ${{ github.sha }}

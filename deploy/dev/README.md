@@ -6,7 +6,7 @@
 
 ## Подготовка VPS
 
-Настроить авторизацию общей GraphDB. Пользователь dev должен иметь `ROLE_USER` и `READ_REPO_bitrix24`. Подготовить отдельные credentials текущим production-клиентам и загрузчику перед включением security. Приёмник проверяет включённую security, успешный ASK и HTTP 403 для пустого INSERT. Пустой INSERT не добавляет triples при ошибочно выданном разрешении записи.
+Настроить авторизацию общей GraphDB. Для временного синтетического окружения пользователь dev должен иметь `ROLE_USER` и `READ_REPO_bitrix24_demo`. Набор данных находится в ветке `work/demo_dataset`, коммит `d0f751e`. Импортировать его в отдельный repository существующей GraphDB. Подготовить отдельные credentials текущим production-клиентам и загрузчику перед включением security. Приёмник проверяет включённую security, успешный ASK и HTTP 403 для пустого INSERT. Пустой INSERT не добавляет triples при ошибочно выданном разрешении записи.
 
 Установить проверенные конфигурации от root. Основной compose.yaml здесь фиксируется при настройке сервера, последующие релизы передают только образы. Изменения серверной конфигурации проверяются отдельно.
 
@@ -18,7 +18,7 @@ install -m 755 deploy/dev/receive.py /usr/local/sbin/semantic-bi-receive-dev
 docker network create --internal semantic_bi_dev_rdf
 ```
 
-Создать `/etc/semantic-bi/dev/dev.env` с правами 600. Внести dev GraphDB credentials, repository `bitrix24`, необходимые параметры namespace/graph prefix, независимые секреты auth/gateway/MCP и dev API-ключ провайдера. Параметры dev задаются следующим образом.
+Создать `/etc/semantic-bi/dev/dev.env` с правами 600. Внести dev GraphDB credentials, repository `bitrix24_demo`, независимые секреты auth/gateway/MCP и dev API-ключ провайдера. Параметры dev задаются следующим образом.
 
 ```dotenv
 AUTH_ENABLED=1
@@ -31,7 +31,8 @@ AUTH_COOKIE_SECURE=1
 ONTOLOGY_AUTO_PUBLISH_BUILTINS=0
 ONTOLOGY_ADMIN_TOKEN=
 RDF_BACKEND=graphdb
-GRAPHDB_REPOSITORY=bitrix24
+GRAPHDB_REPOSITORY=bitrix24_demo
+GRAPH_PREFIX=urn:bitrix24:entity:demo:
 RDF_URL_DOCKER=http://graphdb:7200
 MCP_ENABLE_SAFE_SPARQL=0
 MCP_SAFE_SPARQL_SYNTHETIC_REPOSITORY=0
@@ -64,4 +65,4 @@ CRM_MONITOR_ENV_FILE=.env.example DEV_RELEASE_SHA=012345678901234567890123456789
 
 CI проверяет архив, собранный настоящим Docker save, вместе с тестами ограничений приёмника. После первого CD проверить `/ready`, вход через Yandex, чтение данных и mounts/networks контейнеров. Лимиты всех dev-контейнеров суммарно составляют 1088 MiB. Следить за реальным расходом RAM и swap при совместной нагрузке с production.
 
-Production пока использует старый код и отдельный Compose-проект. Обновление production, перенос nginx Semantic в один файл и настройка prod CD требуют следующей проверенной миграции с сохранением локального diff онтологии.
+Production пока использует старый код и отдельный Compose-проект. По согласованию с командой main и dev временно используют синтетический repository bitrix24_demo. Обновление production, перенос nginx Semantic в один файл и настройка prod CD требуют следующей проверенной миграции с сохранением локального diff онтологии.

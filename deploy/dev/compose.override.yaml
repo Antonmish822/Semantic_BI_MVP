@@ -17,6 +17,7 @@ services:
     build: !reset null
     image: semantic-bi-dev/gateway:${DEV_RELEASE_SHA:?Set DEV_RELEASE_SHA}
     environment:
+      FORWARDED_ALLOW_IPS: '*'
       AUTH_COOKIE_NAME: semantic_bi_dev_session
       AUTH_COOKIE_DOMAIN: ''
       AUTH_COOKIE_SECURE: '1'
@@ -33,6 +34,7 @@ services:
 
   auth-redis:
     <<: *limits
+    user: redis:redis
     mem_limit: 64m
 
   analytics-service:
