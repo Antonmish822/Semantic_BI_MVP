@@ -48,7 +48,7 @@ restrict,command="sudo -n /usr/local/sbin/semantic-bi-receive-dev \"$SSH_ORIGINA
 
 ## Настройка GitHub
 
-Создать environment `dev` с переменной `DEV_SSH_HOST=48.102.145.132` и секретами `DEV_SSH_KEY`, `DEV_SSH_KNOWN_HOSTS`. Публичный ключ установить как описано выше. Host key взять с проверенного VPS и сравнить с ключом действующего SSH-подключения. Workflow использует StrictHostKeyChecking.
+В настройках Actions репозитория создать переменную `DEV_SSH_HOST=48.102.145.132` и секреты `DEV_SSH_KEY`, `DEV_SSH_KNOWN_HOSTS`. Публичный ключ установить как описано выше. Host key взять с проверенного VPS и сравнить с ключом действующего SSH-подключения. Workflow использует StrictHostKeyChecking. Environment `dev` создаётся при первом запуске deployment job. Управление его защитными правилами требует прав администратора репозитория. [Документация GitHub](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
 
 После слияния конфигурации в main создать dev от проверенного main и отправить ветку. CI и затем CD выполнятся автоматически. На первом развёртывании при неуспешной readiness сервисы dev останавливаются. При последующих ошибках используются образы из маркера `/var/lib/semantic-bi-dev/current`. Предыдущие образы сохраняются, их очистка требует учёта текущего и предыдущего релиза.
 
