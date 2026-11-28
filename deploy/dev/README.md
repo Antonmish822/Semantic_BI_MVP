@@ -2,6 +2,8 @@
 
 Ветка `dev` проходит Semantic BI CI. Успешный push запускает Deploy dev из default branch. GitHub собирает шесть образов с тегом полного SHA, передаёт архив по SSH и запускает проверку готовности. Устаревшие релизы пропускаются. Неуспешное обновление возвращает предыдущий SHA. Тома окружения сохраняются при откате образов.
 
+Ручной запуск Deploy dev выполняет только проверку доставки `verify`. Для выбранного SHA требуется успешный CI. Архив передаётся на VPS и проверяется без вызовов Docker или GraphDB. Такой запуск позволяет проверить канал CD до согласования авторизации общей базы.
+
 ## Подготовка VPS
 
 Настроить авторизацию общей GraphDB. Пользователь dev должен иметь `ROLE_USER` и `READ_REPO_bitrix24`. Подготовить отдельные credentials текущим production-клиентам и загрузчику перед включением security. Приёмник проверяет включённую security, успешный ASK и HTTP 403 для пустого INSERT. Пустой INSERT не добавляет triples при ошибочно выданном разрешении записи.
@@ -44,7 +46,7 @@ OAuth callback dev нужно зарегистрировать у Yandex. Пер
 restrict,command="sudo -n /usr/local/sbin/semantic-bi-receive-dev \"$SSH_ORIGINAL_COMMAND\"" ssh-ed25519 PUBLIC_KEY
 ```
 
-В sudoers разрешить только `/usr/local/sbin/semantic-bi-receive-dev`. Файл `receive.py`, конфигурация Compose и каталог `.ssh/authorized_keys` должны принадлежать root, deploy-пользователь получает только чтение своего authorized_keys. Вход обычной shell этим ключом ограничен forced command. Приёмник допускает единственный аргумент `deploy` с полным SHA и проверяет шесть точных image tags перед Docker load. Он выполняет операции только для Compose-проекта `semantic_bi_dev`. Дополнительная сеть связывает dev с контейнером GraphDB. Общую GraphDB после её пересоздания следует снова подключить к `semantic_bi_dev_rdf`, приёмник делает это при следующем релизе.
+В sudoers разрешить только `/usr/local/sbin/semantic-bi-receive-dev`. Файл `receive.py`, конфигурация Compose и каталог `.ssh/authorized_keys` должны принадлежать root, deploy-пользователь получает только чтение своего authorized_keys. Вход обычной shell этим ключом ограничен forced command. Приёмник допускает команды `deploy` и `verify` с полным SHA и проверяет шесть точных image tags. Deploy выполняет операции только для Compose-проекта `semantic_bi_dev`. Дополнительная сеть связывает dev с контейнером GraphDB. Общую GraphDB после её пересоздания следует снова подключить к `semantic_bi_dev_rdf`, приёмник делает это при следующем релизе.
 
 ## Настройка GitHub
 

@@ -1,6 +1,7 @@
 name: Deploy dev
 
 on:
+  workflow_dispatch:
   workflow_run:
     workflows: [Semantic BI CI]
     branches: [dev]
@@ -8,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: deploy-dev
@@ -16,9 +18,10 @@ concurrency:
 jobs:
   build:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     outputs:
@@ -26,11 +29,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - name: Record tested revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Require successful CI for the exact revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/react-web.yml/runs?head_sha=$RELEASE_SHA&status=success" \
+            --jq '.workflow_runs | length > 0' | grep -qx true
       - name: Build dev images
         env:
           RELEASE_SHA: ${{ steps.revision.outputs.sha }}
@@ -57,12 +67,17 @@ jobs:
           RELEASE_SHA: ${{ needs.build.outputs.sha }}
           SSH_HOST: ${{ vars.DEV_SSH_HOST }}
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/dev" --jq .object.sha)"
-          if [ "$current_sha" != "$RELEASE_SHA" ]; then
-            echo 'Skipping a release superseded on dev'
-            exit 0
+          operation=verify
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            operation=deploy
+            current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/dev" --jq .object.sha)"
+            if [ "$current_sha" != "$RELEASE_SHA" ]; then
+              echo 'Skipping a release superseded on dev'
+              exit 0
+            fi
           fi
           install -d -m 700 "$HOME/.ssh"
           trap 'rm -f "$HOME/.ssh/dev_key"' EXIT
@@ -71,4 +86,4 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           ssh -i "$HOME/.ssh/dev_key" -o IdentitiesOnly=yes \
             -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "semantic-bi-deploy@$SSH_HOST" "deploy $RELEASE_SHA" < images.tar.gz
+            "semantic-bi-deploy@$SSH_HOST" "$operation $RELEASE_SHA" < images.tar.gz

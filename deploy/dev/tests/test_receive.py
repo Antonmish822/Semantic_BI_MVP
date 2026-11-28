@@ -142,6 +142,20 @@ class ReceiverChecks(unittest.TestCase):
                 receiver.deploy(SHA, Path('unused'))
             self.assertEqual((Path(directory) / 'current').read_text().strip(), SHA)
 
+    def test_verify_delivery_does_not_call_database_or_docker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = self.archive(directory)
+            stream = SimpleNamespace(buffer=io.BytesIO(archive.read_bytes()))
+            with patch.object(receiver, 'STATE', Path(directory)), \
+                    patch.object(receiver.sys, 'argv', ['receive.py', 'verify ' + SHA]), \
+                    patch.object(receiver.sys, 'stdin', stream), \
+                    patch.object(receiver, 'check_database_access') as database, \
+                    patch.object(receiver, 'run') as docker:
+                receiver.main()
+                database.assert_not_called()
+                docker.assert_not_called()
+            self.assertFalse((Path(directory) / 'current').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

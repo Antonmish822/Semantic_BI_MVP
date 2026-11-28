@@ -177,10 +177,10 @@ for path in source.glob('*.ttl'):
 
 def main():
     command = sys.argv[1] if len(sys.argv) == 2 else ''
-    match = re.fullmatch(r'deploy ([0-9a-f]{40})', command)
+    match = re.fullmatch(r'(deploy|verify) ([0-9a-f]{40})', command)
     if not match:
-        raise ValueError('Only deploy followed by a full commit SHA is allowed')
-    sha = match[1]
+        raise ValueError('Only deploy or verify followed by a full commit SHA is allowed')
+    mode, sha = match.groups()
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (STATE / 'deploy.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -193,7 +193,11 @@ def main():
                     if total > MAX_ARCHIVE_BYTES:
                         raise ValueError('Image archive is too large')
                     target.write(chunk)
-            deploy(sha, archive)
+            if mode == 'verify':
+                validate_images(archive, sha)
+                print(f'Verified dev delivery {sha}', flush=True)
+            else:
+                deploy(sha, archive)
 
 
 if __name__ == '__main__':
