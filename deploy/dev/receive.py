@@ -54,8 +54,8 @@ def prod_profile():
                       ontology_directory=project / 'ontologies', legacy_compose=project / 'compose.yaml')
 
 
-def run(*args, **kwargs):
-    return subprocess.run(args, check=True, **kwargs)
+def run(*args, check=True, **kwargs):
+    return subprocess.run(args, check=check, **kwargs)
 
 
 def validate_images(archive, sha, profile=None):
@@ -73,6 +73,15 @@ def validate_images(archive, sha, profile=None):
     tags = [tag for item in manifests[0] for tag in item.get('RepoTags', [])]
     if len(tags) != len(expected) or set(tags) != expected:
         raise ValueError('Archive contains unexpected image tags')
+
+
+def load_images(archive, sha, profile):
+    tags = [f'{profile.image_prefix}/{target}:{sha}' for target in TARGETS]
+    cached = run('docker', 'image', 'inspect', *tags, check=False, capture_output=True)
+    if cached.returncode == 0:
+        print(f'Using cached {profile.name} images for {sha}', flush=True)
+        return
+    run('docker', 'load', '--input', str(archive))
 
 
 def check_database_access(profile=None):
@@ -177,7 +186,7 @@ def deploy(sha, archive, profile=None):
     validate_images(archive, sha, profile=profile)
     check_database_access(profile=profile)
     compose(sha, 'config', '--quiet', profile=profile)
-    run('docker', 'load', '--input', str(archive))
+    load_images(archive, sha, profile)
     inspection = run('docker', 'inspect', GRAPHDB, capture_output=True, text=True)
     networks = json.loads(inspection.stdout)[0]['NetworkSettings']['Networks']
     if profile.network not in networks:

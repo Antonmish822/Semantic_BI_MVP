@@ -105,7 +105,7 @@ class ReceiverChecks(unittest.TestCase):
                     receiver.check_database_access()
 
     def deployment(self, directory):
-        inspection = SimpleNamespace(stdout=json.dumps([{'NetworkSettings': {'Networks': {receiver.NETWORK: {}}}}]))
+        inspection = SimpleNamespace(returncode=0, stdout=json.dumps([{'NetworkSettings': {'Networks': {receiver.NETWORK: {}}}}]))
         patches = [patch.object(receiver, 'STATE', Path(directory)),
                    patch.object(receiver, 'validate_images'),
                    patch.object(receiver, 'check_database_access'),
@@ -207,6 +207,21 @@ class ReceiverChecks(unittest.TestCase):
         self.assertEqual(args[:4], ('docker', 'compose', '--project-name', 'semantic_bi_mvp'))
         self.assertIn(str(prod.env_file), args)
         self.assertEqual(run.call_args.kwargs['env']['PROD_RELEASE_SHA'], SHA)
+
+    def test_existing_release_images_are_reused_without_loading_rebuilt_tags(self):
+        for profile in [receiver.dev_profile(), receiver.prod_profile()]:
+            with self.subTest(profile=profile.name), \
+                    patch.object(receiver, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+                receiver.load_images(Path('archive'), SHA, profile)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[:3], ('docker', 'image', 'inspect'))
+                self.assertEqual(set(run.call_args.args[3:]),
+                                 {f'{profile.image_prefix}/{target}:{SHA}' for target in receiver.TARGETS})
+
+    def test_missing_release_images_are_loaded(self):
+        with patch.object(receiver, 'run', return_value=SimpleNamespace(returncode=1)) as run:
+            receiver.load_images(Path('archive'), SHA, receiver.dev_profile())
+            run.assert_any_call('docker', 'load', '--input', 'archive')
 
 
 if __name__ == '__main__':
