@@ -91,6 +91,10 @@ jobs:
         env:
           DEV_RELEASE_SHA: ${{ github.sha }}
         run: docker compose --env-file .env.example -f compose.yaml -f deploy/dev/compose.override.yaml config --quiet
+      - name: Validate production configuration
+        env:
+          PROD_RELEASE_SHA: ${{ github.sha }}
+        run: docker compose --env-file .env.example -f compose.yaml -f deploy/prod/compose.override.yaml config --quiet
       - name: Build all application services
         run: docker compose --env-file .env.example build
       - name: Check restricted Redis startup for dev
@@ -117,5 +121,17 @@ jobs:
           spec.loader.exec_module(receiver)
           archive = Path('images.tar.gz')
           receiver.validate_images(archive, os.environ['RELEASE_SHA'])
+          archive.unlink()
+          PY
+          IMAGE_PREFIX=semantic-bi-prod bash deploy/dev/build.sh
+          python3 - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('receive', 'deploy/dev/receive.py')
+          receiver = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(receiver)
+          archive = Path('images.tar.gz')
+          receiver.validate_images(archive, os.environ['RELEASE_SHA'], profile=receiver.prod_profile())
           archive.unlink()
           PY

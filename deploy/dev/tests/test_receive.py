@@ -6,7 +6,8 @@ import tarfile
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
+from dataclasses import replace
 from urllib.error import HTTPError
 
 spec = importlib.util.spec_from_file_location('receiver', Path(__file__).parents[1] / 'receive.py')
@@ -132,7 +133,7 @@ class ReceiverChecks(unittest.TestCase):
                     patch.object(receiver, 'wait_ready', side_effect=RuntimeError('not ready')):
                 with self.assertRaises(RuntimeError):
                     receiver.deploy(SHA, Path('unused'))
-                compose.assert_any_call(SHA, 'stop')
+                compose.assert_any_call(SHA, 'stop', profile=ANY)
             self.assertFalse((Path(directory) / 'current').exists())
 
     def test_successful_release_records_exact_sha(self):
@@ -155,6 +156,57 @@ class ReceiverChecks(unittest.TestCase):
                 database.assert_not_called()
                 docker.assert_not_called()
             self.assertFalse((Path(directory) / 'current').exists())
+
+    def test_image_archives_are_scoped_to_the_selected_environment(self):
+        prod = receiver.prod_profile()
+        tags = [f'{prod.image_prefix}/{target}:{SHA}' for target in receiver.TARGETS]
+        with tempfile.TemporaryDirectory() as directory:
+            archive = self.archive(directory, tags)
+            receiver.validate_images(archive, SHA, profile=prod)
+            with self.assertRaises(ValueError):
+                receiver.validate_images(archive, SHA)
+            archive = self.archive(directory)
+            with self.assertRaises(ValueError):
+                receiver.validate_images(archive, SHA, profile=prod)
+
+    def test_prod_initial_failure_restores_legacy_stack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.deployment(directory)
+            prod = replace(receiver.prod_profile(), state=Path(directory), ontology_directory=Path(directory))
+            with patch.object(receiver, 'compose'), \
+                    patch.object(receiver, 'wait_ready', side_effect=RuntimeError('not ready')), \
+                    patch.object(receiver, 'restore_legacy') as restore:
+                with self.assertRaises(RuntimeError):
+                    receiver.deploy(SHA, Path('unused'), profile=prod)
+                restore.assert_called_once_with(prod)
+            self.assertFalse((Path(directory) / 'current').exists())
+
+    def test_prod_database_user_must_have_write_permission(self):
+        class QueryResponse(io.BytesIO):
+            status = 200
+        for writable in [True, False]:
+            with self.subTest(writable=writable), tempfile.TemporaryDirectory() as directory:
+                env = Path(directory) / 'prod.env'
+                env.write_text('RDF_USERNAME=prod\nRDF_PASSWORD=test\nGRAPHDB_REPOSITORY=bitrix24_demo\n')
+                prod = replace(receiver.prod_profile(), env_file=env)
+                denied = HTTPError('http://test', 403, 'Forbidden', {}, None)
+                responses = [io.BytesIO(b'true'), QueryResponse(b'{}'), denied,
+                             QueryResponse(b'') if writable else denied]
+                with patch.object(receiver, 'urlopen', side_effect=responses):
+                    if writable:
+                        receiver.check_database_access(profile=prod)
+                    else:
+                        with self.assertRaises(HTTPError):
+                            receiver.check_database_access(profile=prod)
+
+    def test_prod_compose_uses_fixed_project_and_production_environment(self):
+        prod = receiver.prod_profile()
+        with patch.object(receiver, 'run') as run:
+            receiver.compose(SHA, 'config', '--quiet', profile=prod)
+        args = run.call_args.args
+        self.assertEqual(args[:4], ('docker', 'compose', '--project-name', 'semantic_bi_mvp'))
+        self.assertIn(str(prod.env_file), args)
+        self.assertEqual(run.call_args.kwargs['env']['PROD_RELEASE_SHA'], SHA)
 
 
 if __name__ == '__main__':

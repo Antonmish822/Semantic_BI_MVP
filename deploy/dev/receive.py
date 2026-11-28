@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Receive only dev images through a forced SSH command using trusted Compose files."""
+"""Receive release images through forced SSH commands using trusted Compose files."""
+from dataclasses import dataclass
 import fcntl
 import base64
 import json
@@ -25,12 +26,41 @@ NETWORK = 'semantic_bi_dev_rdf'
 MAX_ARCHIVE_BYTES = 2 * 1024**3
 
 
+@dataclass(frozen=True)
+class Deployment:
+    name: str
+    config: Path
+    state: Path
+    env_file: Path
+    project: str
+    image_prefix: str
+    port: int
+    network: str
+    database_writable: bool = False
+    ontology_directory: Path | None = None
+    legacy_compose: Path | None = None
+
+
+def dev_profile():
+    return Deployment('dev', CONFIG, STATE, CONFIG / 'dev.env', 'semantic_bi_dev',
+                      'semantic-bi-dev', 18088, NETWORK)
+
+
+def prod_profile():
+    project = Path('/home/antonmisurov81/Semantic_BI_MVP')
+    return Deployment('prod', Path('/etc/semantic-bi/prod'), Path('/var/lib/semantic-bi-prod'),
+                      project / '.env', 'semantic_bi_mvp', 'semantic-bi-prod', 8088,
+                      'graphdb_default', database_writable=True,
+                      ontology_directory=project / 'ontologies', legacy_compose=project / 'compose.yaml')
+
+
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 
 
-def validate_images(archive, sha):
-    expected = {f'semantic-bi-dev/{target}:{sha}' for target in TARGETS}
+def validate_images(archive, sha, profile=None):
+    profile = profile or dev_profile()
+    expected = {f'{profile.image_prefix}/{target}:{sha}' for target in TARGETS}
     manifests = []
     with tarfile.open(archive, 'r|gz') as images:
         for member in images:
@@ -45,9 +75,10 @@ def validate_images(archive, sha):
         raise ValueError('Archive contains unexpected image tags')
 
 
-def check_database_access():
+def check_database_access(profile=None):
+    profile = profile or dev_profile()
     values = {}
-    for raw in (CONFIG / 'dev.env').read_text().splitlines():
+    for raw in profile.env_file.read_text().splitlines():
         line = raw.strip()
         if line and not line.startswith('#') and '=' in line:
             key, value = line.split('=', 1)
@@ -58,10 +89,10 @@ def check_database_access():
     password = values.get('RDF_PASSWORD', '')
     repository = values.get('GRAPHDB_REPOSITORY', '')
     if not username or not password or not re.fullmatch(r'[a-zA-Z0-9_-]+', repository):
-        raise ValueError('Dev requires dedicated GraphDB credentials and a repository')
+        raise ValueError('Deployment requires dedicated GraphDB credentials and a repository')
     with urlopen('http://127.0.0.1:7200/rest/security', timeout=5) as response:
         if json.load(response) is not True:
-            raise ValueError('GraphDB security must be enabled before dev deployment')
+            raise ValueError('GraphDB security must be enabled before deployment')
     credentials = base64.b64encode(f'{username}:{password}'.encode()).decode()
     headers = {'Authorization': f'Basic {credentials}',
                'Content-Type': 'application/x-www-form-urlencoded'}
@@ -69,7 +100,7 @@ def check_database_access():
     query = urlencode({'query': 'ASK {}'}).encode()
     with urlopen(Request(endpoint, data=query, headers=headers), timeout=10) as response:
         if response.status != 200:
-            raise ValueError('Dev database read check failed')
+            raise ValueError('Database read check failed')
     # An empty INSERT changes no triples even if permissions were misconfigured.
     update = urlencode({'update': 'INSERT DATA {}'}).encode()
     anonymous = Request(endpoint + '/statements', data=update,
@@ -86,49 +117,71 @@ def check_database_access():
         with urlopen(Request(endpoint + '/statements', data=update, headers=headers), timeout=10):
             pass
     except HTTPError as error:
-        if error.code == 403:
+        if error.code == 403 and not profile.database_writable:
             return
         raise
-    raise ValueError('Dev database user has write access')
+    if not profile.database_writable:
+        raise ValueError('Read-only database user has write access')
 
 
-def compose(sha, *args):
+def compose(sha, *args, profile=None):
+    profile = profile or dev_profile()
     env = {
         'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         'HOME': '/root',
-        'DEV_RELEASE_SHA': sha,
-        'CRM_MONITOR_ENV_FILE': str(CONFIG / 'dev.env'),
+        profile.name.upper() + '_RELEASE_SHA': sha,
+        'CRM_MONITOR_ENV_FILE': str(profile.env_file),
         'RDF_URL_DOCKER': 'http://graphdb:7200',
     }
-    return run('docker', 'compose', '--project-name', 'semantic_bi_dev',
-               '--env-file', str(CONFIG / 'dev.env'),
-               '-f', str(CONFIG / 'compose.yaml'),
-               '-f', str(CONFIG / 'compose.override.yaml'), *args, env=env)
+    return run('docker', 'compose', '--project-name', profile.project,
+               '--env-file', str(profile.env_file),
+               '-f', str(profile.config / 'compose.yaml'),
+               '-f', str(profile.config / 'compose.override.yaml'), *args, env=env)
 
 
-def wait_ready():
+def wait_ready(profile=None):
+    profile = profile or dev_profile()
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         try:
-            with urlopen('http://127.0.0.1:18088/ready', timeout=5) as response:
+            with urlopen(f'http://127.0.0.1:{profile.port}/ready', timeout=5) as response:
                 if response.status == 200 and json.load(response).get('status') == 'ready':
                     return
         except (URLError, TimeoutError, ValueError):
             pass
         time.sleep(3)
-    raise RuntimeError('Dev readiness check failed')
+    raise RuntimeError('Readiness check failed for ' + profile.name)
 
 
-def deploy(sha, archive):
+def restore_legacy(profile):
+    run('docker', 'compose', '--project-name', profile.project,
+        '--env-file', str(profile.env_file), '-f', str(profile.legacy_compose),
+        'up', '-d', '--no-build', '--pull', 'never', '--remove-orphans')
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(f'http://127.0.0.1:{profile.port}/auth/status', timeout=5):
+                return
+        except HTTPError as error:
+            if error.code == 401:
+                return
+        except (URLError, TimeoutError):
+            pass
+        time.sleep(3)
+    raise RuntimeError('Legacy production rollback did not become available')
+
+
+def deploy(sha, archive, profile=None):
+    profile = profile or dev_profile()
     # Loading is allowed only after validating all tags, preserving other projects' tags.
-    validate_images(archive, sha)
-    check_database_access()
-    compose(sha, 'config', '--quiet')
+    validate_images(archive, sha, profile=profile)
+    check_database_access(profile=profile)
+    compose(sha, 'config', '--quiet', profile=profile)
     run('docker', 'load', '--input', str(archive))
     inspection = run('docker', 'inspect', GRAPHDB, capture_output=True, text=True)
     networks = json.loads(inspection.stdout)[0]['NetworkSettings']['Networks']
-    if NETWORK not in networks:
-        run('docker', 'network', 'connect', '--alias', 'graphdb', NETWORK, GRAPHDB)
+    if profile.network not in networks:
+        run('docker', 'network', 'connect', '--alias', 'graphdb', profile.network, GRAPHDB)
 
     # Seed a separate named volume using the unprivileged ontology image.
     seed = '''
@@ -141,24 +194,29 @@ for path in source.glob('*.ttl'):
     if not destination.exists():
         shutil.copyfile(path, destination)
 '''
+    mount = f'type=volume,source={profile.project}_ontologies,target=/app/ontologies'
+    groups = []
+    if profile.ontology_directory:
+        mount = f'type=bind,source={profile.ontology_directory},target=/app/ontologies'
+        groups = ['--group-add', str(profile.ontology_directory.stat().st_gid)]
     run('docker', 'run', '--rm', '--network', 'none', '--read-only',
         '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--memory', '128m', '--pids-limit', '64',
-        '--mount', 'type=volume,source=semantic_bi_dev_ontologies,target=/app/ontologies',
-        f'semantic-bi-dev/ontology:{sha}', 'python', '-c', seed)
+        '--mount', mount, *groups,
+        f'{profile.image_prefix}/ontology:{sha}', 'python', '-c', seed)
 
-    current = STATE / 'current'
+    current = profile.state / 'current'
     previous = current.read_text().strip() if current.exists() else None
     if previous and not re.fullmatch(r'[0-9a-f]{40}', previous):
         raise ValueError('Invalid current release marker')
     try:
-        compose(sha, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90')
+        compose(sha, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90', profile=profile)
         compose(sha, 'exec', '-T', 'analytics-service', 'python', '-c',
                 'from common.rdf_transport import create_rdf_transport; '
                 'rows = create_rdf_transport().select("SELECT (1 AS ?health) WHERE {}"); '
-                'assert rows and rows[0]["health"]["value"] == "1"')
-        wait_ready()
-        marker = STATE / 'current.next'
+                'assert rows and rows[0]["health"]["value"] == "1"', profile=profile)
+        wait_ready(profile=profile)
+        marker = profile.state / 'current.next'
         with marker.open('w') as output:
             output.write(sha + '\n')
             output.flush()
@@ -166,25 +224,28 @@ for path in source.glob('*.ttl'):
         os.replace(marker, current)
     except Exception:
         if previous:
-            compose(previous, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90')
-            wait_ready()
-            print(f'Restored dev release {previous}', flush=True)
+            compose(previous, 'up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90', profile=profile)
+            wait_ready(profile=profile)
+            print(f'Restored {profile.name} release {previous}', flush=True)
+        elif profile.legacy_compose:
+            restore_legacy(profile)
         else:
-            compose(sha, 'stop')
+            compose(sha, 'stop', profile=profile)
         raise
-    print(f'Deployed dev release {sha}', flush=True)
+    print(f'Deployed {profile.name} release {sha}', flush=True)
 
 
-def main():
+def main(profile=None):
+    profile = profile or dev_profile()
     command = sys.argv[1] if len(sys.argv) == 2 else ''
     match = re.fullmatch(r'(deploy|verify) ([0-9a-f]{40})', command)
     if not match:
         raise ValueError('Only deploy or verify followed by a full commit SHA is allowed')
     mode, sha = match.groups()
-    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with (STATE / 'deploy.lock').open('w') as lock:
+    profile.state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (profile.state / 'deploy.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        with tempfile.TemporaryDirectory(prefix='release-', dir=STATE) as directory:
+        with tempfile.TemporaryDirectory(prefix='release-', dir=profile.state) as directory:
             archive = Path(directory) / 'images.tar.gz'
             total = 0
             with archive.open('wb') as target:
@@ -194,10 +255,10 @@ def main():
                         raise ValueError('Image archive is too large')
                     target.write(chunk)
             if mode == 'verify':
-                validate_images(archive, sha)
-                print(f'Verified dev delivery {sha}', flush=True)
+                validate_images(archive, sha, profile=profile)
+                print(f'Verified {profile.name} delivery {sha}', flush=True)
             else:
-                deploy(sha, archive)
+                deploy(sha, archive, profile=profile)
 
 
 if __name__ == '__main__':
