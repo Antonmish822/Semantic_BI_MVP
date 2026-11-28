@@ -12,7 +12,7 @@ Workflow Deploy production запускается вручную из main. Оп
 
 Новый ontology-service использует каталог `/home/antonmisurov81/Semantic_BI_MVP/ontologies`, включая сохранённую локальную правку. Именованные тома profile_logs и published_queries принадлежат прежнему Compose-проекту semantic_bi_mvp. Redis получает отдельный том auth_sessions.
 
-Установить проверенный nginx.conf как единый файл semantixpulse.ru. Сначала сохранить оба текущих файла и symlinks. Перенести рабочий HTTPS-блок из iotgreenhouse.ru, проверить сертификат и маршрутизацию. После подготовки единого файла отключить прежний symlink HTTPS-блока, выполнить nginx -t и reload. В прокси используется Host $host и X-Forwarded-Proto. Приложение доверяет forwarded headers на loopback-публикации.
+Установить проверенный nginx.conf как единый файл semantixpulse.ru. Сначала сохранить оба текущих файла и symlinks. Выделить HTTPS-блок Semantic по server_name semantixpulse.ru и www.semantixpulse.ru, перенести его в новый файл и проверить сертификат и маршрутизацию. В iotgreenhouse.ru выделить полный HTTP-блок домена iotgreenhouse.ru и сверить его SHA-256 до и после переноса. Его symlink относится к отдельному виртуальному хосту. Выполнить nginx -t и reload. В прокси используется Host $host и X-Forwarded-Proto. Приложение доверяет forwarded headers на loopback-публикации.
 
 ## Доступ CD
 
